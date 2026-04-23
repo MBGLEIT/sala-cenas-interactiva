@@ -1,36 +1,79 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Sala de Cenas Interactiva
 
-## Getting Started
+Proyecto real de aprendizaje construido con:
 
-First, run the development server:
+- Next.js 14
+- React 18
+- Supabase
+- Tailwind CSS
+- Zod
+- react-konva
+
+## Estado actual
+
+La Fase 6 esta terminada.
+
+Ahora mismo el proyecto ya:
+
+- Identifica asistentes por su codigo
+- Carga la sala del evento
+- Dibuja mesas y sillas en un plano interactivo
+- Muestra estados visuales de las sillas:
+  libre, ocupada, seleccionada y asignada al asistente actual
+- Permite confirmar reservas
+- Escucha cambios en tiempo real sobre la tabla `reservas`
+
+La siguiente fase pendiente es la Fase 7, centrada en mejorar UX y preparar despliegue.
+
+## Scripts
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm run lint
+npm run build
+npm run start
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Variables de entorno
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+El proyecto usa estas variables en `.env.local`:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```env
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
+```
 
-## Learn More
+Hay una plantilla en `.env.example`.
 
-To learn more about Next.js, take a look at the following resources:
+## Base de datos y Supabase
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Los archivos importantes de Supabase estan en:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- `supabase/migrations/20260423090953_init_schema.sql`
+- `supabase/migrations/20260423093657_enable_rls_policies.sql`
+- `supabase/migrations/20260423100015_grant_api_access.sql`
+- `supabase/migrations/20260423105555_enable_realtime_for_reservas.sql`
+- `supabase/seed.sql`
 
-## Deploy on Vercel
+## Flujo de prueba rapido
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+1. Ejecuta `seed.sql` en Supabase para resetear los datos de prueba.
+2. Arranca la app con `npm run dev`.
+3. Prueba identificadores como:
+   `ANA-104`, `CAR-208`, `LUC-315`.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Nota
+
+Si ves comportamientos raros en desarrollo, lo normal es:
+
+1. parar `next dev`
+2. volver a lanzarlo
+3. refrescar el navegador con `Ctrl + F5`
+
+Esto evita quedarte con procesos o respuestas viejas en local.
+
+## Despliegue
+
+La guia de salida a produccion de la Fase 7 esta en:
+
+- `docs/fase-7-produccion.md`
