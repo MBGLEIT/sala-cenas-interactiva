@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import ToastStack, { ToastItem } from "@/components/toast-stack";
@@ -23,7 +24,7 @@ const DinnerRoomCanvas = dynamic(
     ssr: false,
     loading: () => (
       <div className="rounded-[28px] border border-stone-200 bg-stone-50 px-6 py-10 text-stone-500">
-        Preparando la sala interactiva...
+        Preparando la sala...
       </div>
     ),
   },
@@ -46,6 +47,26 @@ async function fetchEventoSala(eventoId: string): Promise<EventoSala> {
 
   const evento = data as unknown as EventoQueryResult;
   return normalizeEventoSala(evento);
+}
+
+function LegendPill({
+  colorClassName,
+  title,
+  description,
+}: {
+  colorClassName: string;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="flex items-start gap-3 rounded-2xl border border-stone-200 bg-white px-4 py-4">
+      <span className={`mt-1 h-4 w-4 rounded-full ${colorClassName}`} />
+      <div>
+        <p className="text-sm font-semibold text-stone-900">{title}</p>
+        <p className="mt-1 text-sm leading-6 text-stone-600">{description}</p>
+      </div>
+    </div>
+  );
 }
 
 export default function Home() {
@@ -73,11 +94,15 @@ export default function Home() {
   );
 
   function dismissToast(id: string) {
-    setToasts((currentToasts) => currentToasts.filter((toast) => toast.id !== id));
+    setToasts((currentToasts) =>
+      currentToasts.filter((toast) => toast.id !== id),
+    );
   }
 
   function pushToast(toast: Omit<ToastItem, "id">) {
-    const id = `${toast.tone}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const id = `${toast.tone}-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
 
     setToasts((currentToasts) => [
       ...currentToasts.slice(-2),
@@ -86,6 +111,15 @@ export default function Home() {
         ...toast,
       },
     ]);
+  }
+
+  function resetFlow() {
+    setError("");
+    setInfoMessage("");
+    setAsistente(null);
+    setEvento(null);
+    setSelectedSillaId(null);
+    setRealtimeConnected(false);
   }
 
   useEffect(() => {
@@ -161,14 +195,11 @@ export default function Home() {
             changedAsistenteId !== asistenteIdRef.current
           ) {
             setSelectedSillaId(null);
-            setError(
-              "La silla que habias seleccionado acaba de ocuparse. Elige otra.",
-            );
+            setError("Esa silla ya no esta libre. Elige otra.");
             pushToast({
               tone: "error",
-              title: "La silla ya no estaba libre",
-              description:
-                "Otra persona la ha ocupado antes. Elige otra silla verde.",
+              title: "Silla ocupada",
+              description: "Otra persona la ha reservado antes que tu.",
             });
           }
 
@@ -176,14 +207,12 @@ export default function Home() {
             const eventoActualizado = await fetchEventoSala(evento.id);
             setEvento(eventoActualizado);
           } catch {
-            setError(
-              "La sala no se ha podido actualizar en tiempo real. Puedes recargarla manualmente.",
-            );
+            setError("No se pudo actualizar la sala en este momento.");
             pushToast({
               tone: "error",
-              title: "No se pudo refrescar la sala",
+              title: "Sala no actualizada",
               description:
-                "La reserva existe, pero la interfaz no ha podido traer el estado nuevo.",
+                "La sala no ha podido refrescarse automaticamente ahora mismo.",
             });
           }
         },
@@ -204,15 +233,12 @@ export default function Home() {
     const identificadorLimpio = identificador.trim().toUpperCase();
 
     if (!identificadorLimpio) {
-      setAsistente(null);
-      setEvento(null);
-      setSelectedSillaId(null);
-      setInfoMessage("");
-      setError("Escribe tu identificador para poder continuar.");
+      resetFlow();
+      setError("Escribe tu identificador para continuar.");
       pushToast({
         tone: "error",
         title: "Falta el identificador",
-        description: "Escribe el codigo del asistente para poder entrar.",
+        description: "Escribe el codigo del asistente para continuar.",
       });
       return;
     }
@@ -226,7 +252,9 @@ export default function Home() {
 
     try {
       const response = await fetch(
-        `/api/asistentes?identificador=${encodeURIComponent(identificadorLimpio)}&ts=${Date.now()}`,
+        `/api/asistentes?identificador=${encodeURIComponent(
+          identificadorLimpio,
+        )}&ts=${Date.now()}`,
         {
           cache: "no-store",
         },
@@ -238,38 +266,34 @@ export default function Home() {
       };
 
       if (!response.ok || !result.asistente) {
-        setError(
-          result.error ??
-            "No hemos podido comprobar tu identificador. Intentalo otra vez.",
-        );
+        setError(result.error ?? "No se ha podido comprobar el identificador.");
         pushToast({
           tone: "error",
-          title: "No se encontro el asistente",
+          title: "Asistente no encontrado",
           description:
-            result.error ??
-            "Revisa el identificador y vuelve a intentarlo.",
+            result.error ?? "Revisa el identificador y vuelve a intentarlo.",
         });
         return;
       }
 
       setAsistente(result.asistente);
       await cargarEvento(result.asistente.evento_id);
-      setInfoMessage("Asistente encontrado. Ya puedes revisar la sala.");
+      setInfoMessage("Asistente identificado correctamente.");
       pushToast({
-        tone: "info",
-        title: "Asistente identificado",
-        description: `${result.asistente.nombre} ya puede entrar en la sala.`,
+        tone: "success",
+        title: "Acceso correcto",
+        description: `${result.asistente.nombre} puede acceder a la sala.`,
       });
     } catch (submitError) {
       const message =
         submitError instanceof Error
           ? submitError.message
-          : "Ha ocurrido un problema de conexion. Vuelve a intentarlo.";
+          : "Ha ocurrido un problema de conexion.";
 
       setError(message);
       pushToast({
         tone: "error",
-        title: "No se pudo comprobar el identificador",
+        title: "No se pudo continuar",
         description: message,
       });
     } finally {
@@ -287,7 +311,7 @@ export default function Home() {
 
     setReservationLoading(true);
     setError("");
-    setInfoMessage("Guardando reserva con actualizacion optimista...");
+    setInfoMessage("Guardando reserva...");
     setEvento(
       applyOptimisticReservation(previousEvento, selectedSillaId, asistente.id),
     );
@@ -314,8 +338,7 @@ export default function Home() {
         setEvento(previousEvento);
         setSelectedSillaId(previousSelectedSillaId);
         const message =
-          result.error ??
-          "No se ha podido confirmar la reserva. Intentalo de nuevo.";
+          result.error ?? "No se ha podido confirmar la reserva.";
 
         setError(message);
         pushToast({
@@ -328,9 +351,7 @@ export default function Home() {
       }
 
       await cargarEvento(asistente.evento_id, { silent: true });
-      const message =
-        result.message ??
-        "Reserva creada correctamente. La sala ya se ha sincronizado.";
+      const message = result.message ?? "Reserva creada correctamente.";
 
       setInfoMessage(message);
       pushToast({
@@ -341,34 +362,33 @@ export default function Home() {
     } catch {
       setEvento(previousEvento);
       setSelectedSillaId(previousSelectedSillaId);
-      setError("Ha ocurrido un problema de conexion al guardar la reserva.");
+      setError("Ha ocurrido un problema de conexion al guardar.");
       pushToast({
         tone: "error",
-        title: "Fallo al guardar la reserva",
-        description:
-          "La pantalla ha deshecho el cambio visual porque el servidor no pudo confirmar la reserva.",
+        title: "Fallo al guardar",
+        description: "No se ha podido confirmar la reserva en este momento.",
       });
     } finally {
       setReservationLoading(false);
     }
   }
 
+  const showRoomScreen = Boolean(asistente && evento);
+
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#fff7ed,_#f5f5f4_55%,_#e7e5e4)] px-6 py-12 text-stone-900">
       <ToastStack toasts={toasts} onDismiss={dismissToast} />
 
-      <div className="mx-auto grid max-w-7xl gap-6 xl:grid-cols-[0.95fr_1.45fr]">
-        <section className="rounded-[36px] border border-stone-200 bg-white px-8 py-10 shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-10">
+      {!showRoomScreen ? (
+        <div className="mx-auto max-w-2xl rounded-[36px] border border-stone-200 bg-white px-8 py-10 shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-10">
           <p className="text-sm font-semibold uppercase tracking-[0.35em] text-amber-700">
             Sala de Cenas Interactiva
           </p>
           <h1 className="mt-5 text-4xl font-semibold tracking-tight text-stone-950">
-            Identifica al asistente y elige una silla en la sala.
+            Identifica al asistente
           </h1>
           <p className="mt-5 text-lg leading-8 text-stone-600">
-            Ya no solo consultamos si el identificador existe: ahora dibujamos
-            la sala del evento y permitimos elegir una silla libre de forma
-            visual.
+            Introduce el codigo del asistente para entrar en la sala del evento.
           </p>
 
           <form className="mt-10 space-y-4" onSubmit={handleSubmit}>
@@ -384,228 +404,226 @@ export default function Home() {
               type="text"
               value={identificador}
               onChange={(event) => setIdentificador(event.target.value)}
-              placeholder="Ejemplo: LUC-315"
+              placeholder="Pon aqui tu codigo de asistente"
               className="w-full rounded-2xl border border-stone-300 bg-stone-50 px-5 py-4 text-lg font-medium uppercase tracking-[0.15em] text-stone-900 outline-none transition focus:border-amber-500 focus:bg-white"
             />
-            <button
-              type="submit"
-              disabled={lookupLoading || roomLoading}
-              className="inline-flex min-w-[220px] items-center justify-center rounded-full bg-stone-950 px-6 py-4 text-sm font-semibold uppercase tracking-[0.2em] text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-stone-400"
-            >
-              {lookupLoading ? "Buscando..." : "Entrar en la sala"}
-            </button>
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="submit"
+                disabled={lookupLoading || roomLoading}
+                className="inline-flex min-w-[220px] items-center justify-center rounded-full bg-stone-950 px-6 py-4 text-sm font-semibold uppercase tracking-[0.2em] text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-stone-400"
+              >
+                {lookupLoading ? "Entrando..." : "Entrar en la sala"}
+              </button>
+              <Link
+                href="/admin"
+                className="inline-flex min-w-[220px] items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-4 text-sm font-semibold uppercase tracking-[0.2em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+              >
+                ¿Eres Administrador?
+              </Link>
+            </div>
           </form>
 
-          <div className="mt-8 space-y-4">
-            {lookupLoading || roomLoading ? (
-              <div className="rounded-3xl border border-amber-200 bg-amber-50 px-5 py-4 text-amber-800">
-                Estamos preparando los datos del asistente y la sala del evento.
-              </div>
-            ) : null}
-
-            {error ? (
-              <div className="rounded-3xl border border-rose-200 bg-rose-50 px-5 py-4 text-rose-700">
-                <p className="text-sm font-semibold uppercase tracking-[0.2em]">
-                  Error
-                </p>
-                <p className="mt-2 text-base leading-7">{error}</p>
-              </div>
-            ) : null}
-
-            {infoMessage ? (
-              <div className="rounded-3xl border border-emerald-200 bg-emerald-50 px-5 py-4 text-emerald-700">
-                <p className="text-sm font-semibold uppercase tracking-[0.2em]">
-                  Estado
-                </p>
-                <p className="mt-2 text-base leading-7">{infoMessage}</p>
-              </div>
-            ) : null}
-
-            {asistente ? (
-              <div className="rounded-3xl bg-stone-950 px-6 py-5 text-stone-100">
-                <p className="text-sm uppercase tracking-[0.25em] text-amber-300">
-                  Asistente identificado
-                </p>
-                <p className="mt-3 text-2xl font-semibold">{asistente.nombre}</p>
-                <p className="mt-2 text-sm uppercase tracking-[0.2em] text-stone-400">
-                  {asistente.identificador}
-                </p>
-
-                {reservaActual ? (
-                  <p className="mt-5 rounded-2xl bg-sky-500/15 px-4 py-3 text-sm leading-7 text-sky-200">
-                    Este asistente ya tiene reservada la Mesa {reservaActual.mesaNumero},
-                    Silla {reservaActual.sillaNumero}. La veras marcada en azul en
-                    la sala.
-                  </p>
-                ) : (
-                  <p className="mt-5 rounded-2xl bg-emerald-500/15 px-4 py-3 text-sm leading-7 text-emerald-200">
-                    Todavia no tiene silla asignada. Puedes seleccionar una en
-                    la sala y confirmar la reserva.
-                  </p>
-                )}
-              </div>
-            ) : null}
-
-            <div className="grid gap-3 sm:grid-cols-3">
-              <div className="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3">
-                <p className="text-sm font-semibold text-stone-800">
-                  Verde: libre
-                </p>
-                <p className="mt-1 text-sm leading-6 text-stone-500">
-                  Se puede pulsar y elegir.
-                </p>
-              </div>
-              <div className="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3">
-                <p className="text-sm font-semibold text-stone-800">
-                  Rojo: ocupada
-                </p>
-                <p className="mt-1 text-sm leading-6 text-stone-500">
-                  Ya pertenece a otra persona.
-                </p>
-              </div>
-              <div className="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3">
-                <p className="text-sm font-semibold text-stone-800">
-                  Amarillo: seleccionada
-                </p>
-                <p className="mt-1 text-sm leading-6 text-stone-500">
-                  Es la silla que vas a confirmar.
-                </p>
-              </div>
+          {lookupLoading || roomLoading ? (
+            <div className="mt-8 rounded-3xl border border-amber-200 bg-amber-50 px-5 py-4 text-amber-800">
+              Estamos preparando el acceso a la sala.
             </div>
+          ) : null}
 
-            <div className="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-sm font-semibold text-stone-800">
-                  Tiempo real
-                </p>
-                <span
-                  className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] ${
-                    realtimeConnected
-                      ? "bg-emerald-100 text-emerald-700"
-                      : "bg-stone-200 text-stone-600"
-                  }`}
-                >
-                  {realtimeConnected ? "Activo" : "En espera"}
-                </span>
-              </div>
-              <p className="mt-1 text-sm leading-6 text-stone-500">
-                {realtimeConnected
-                  ? "La sala esta escuchando cambios en vivo de reservas."
-                  : "La escucha en vivo aun no esta activa o no hay sala cargada."}
+          {error ? (
+            <div className="mt-8 rounded-3xl border border-rose-200 bg-rose-50 px-5 py-4 text-rose-700">
+              <p className="text-sm font-semibold uppercase tracking-[0.2em]">
+                Error
+              </p>
+              <p className="mt-2 text-base leading-7">{error}</p>
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <div className="mx-auto max-w-7xl space-y-6">
+          <section className="rounded-[36px] border border-stone-200 bg-white px-8 py-8 shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-10">
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-[0.35em] text-amber-700">
+                Asistente identificado
+              </p>
+              <h1 className="mt-4 text-4xl font-semibold tracking-tight text-stone-950">
+                {asistente?.nombre}
+              </h1>
+              <p className="mt-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-500">
+                {asistente?.identificador}
               </p>
             </div>
+          </section>
 
-            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-amber-900">
-              <p className="text-sm font-semibold uppercase tracking-[0.18em]">
-                Confirmacion visual
-              </p>
-              <p className="mt-2 text-sm leading-6">
-                {seleccionActual
-                  ? `Has elegido la Mesa ${seleccionActual.mesaNumero}, Silla ${seleccionActual.sillaNumero}.`
-                  : "Cuando pulses una silla verde, aqui te resumiremos tu eleccion antes de guardar."}
-              </p>
-            </div>
-          </div>
-        </section>
-
-        <section className="rounded-[36px] border border-stone-200 bg-white px-8 py-8 shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-10">
-          <div className="flex flex-wrap items-start justify-between gap-4">
+          <section className="rounded-[36px] border border-stone-200 bg-white px-8 py-8 shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-10">
             <div>
               <p className="text-sm font-semibold uppercase tracking-[0.3em] text-amber-700">
                 Sala visual
               </p>
               <h2 className="mt-3 text-3xl font-semibold tracking-tight text-stone-950">
-                Plano interactivo del evento
+                {evento?.nombre ?? "Evento"}
               </h2>
             </div>
+          </section>
 
-            <button
-              type="button"
-              onClick={handleConfirmReservation}
-              disabled={
-                !selectedSillaId ||
-                !asistente ||
-                reservationLoading ||
-                Boolean(reservaActual)
-              }
-              className="inline-flex items-center justify-center rounded-full bg-emerald-600 px-6 py-4 text-sm font-semibold uppercase tracking-[0.2em] text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-stone-300"
-            >
-              {reservationLoading
-                ? "Guardando..."
-                : reservaActual
-                  ? "Reserva ya asignada"
-                  : seleccionActual
-                    ? `Confirmar Mesa ${seleccionActual.mesaNumero}, Silla ${seleccionActual.sillaNumero}`
-                    : "Confirmar reserva"}
-            </button>
-          </div>
+          <section className="rounded-[36px] border border-stone-200 bg-white px-8 py-8 shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-10">
+            <div className="mt-2">
+              {!evento ? (
+                <div className="rounded-[28px] border border-dashed border-stone-300 bg-stone-50 px-6 py-10 text-stone-500">
+                  No se ha podido cargar la sala del evento.
+                </div>
+              ) : (
+                <DinnerRoomCanvas
+                  evento={evento}
+                  selectedSillaId={selectedSillaId}
+                  currentAsistenteId={asistente?.id ?? ""}
+                  selectionLocked={Boolean(reservaActual) || reservationLoading}
+                  onSelectSilla={setSelectedSillaId}
+                />
+              )}
+            </div>
 
-          <p className="mt-4 max-w-3xl text-base leading-7 text-stone-600">
-            Cada mesa se dibuja en la posicion guardada en la base de datos. Las
-            sillas se colocan alrededor y cambian de color segun su estado.
-          </p>
-
-          <div className="mt-8">
-            {!evento ? (
-              <div className="rounded-[28px] border border-dashed border-stone-300 bg-stone-50 px-6 py-10 text-stone-500">
-                Primero identifica a un asistente para cargar la sala del evento.
+            <div className="mt-6 rounded-3xl bg-stone-100 px-6 py-5">
+              <div className="flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={resetFlow}
+                  className="inline-flex items-center justify-center rounded-full border border-stone-300 bg-white px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+                >
+                  Cambiar asistente
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmReservation}
+                  disabled={
+                    !selectedSillaId ||
+                    !asistente ||
+                    reservationLoading ||
+                    Boolean(reservaActual)
+                  }
+                  className="inline-flex items-center justify-center rounded-full bg-emerald-600 px-6 py-4 text-sm font-semibold uppercase tracking-[0.2em] text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-stone-300"
+                >
+                  {reservationLoading
+                    ? "Guardando..."
+                    : reservaActual
+                      ? "Reserva ya asignada"
+                      : seleccionActual
+                        ? `Confirmar Mesa ${seleccionActual.mesaNumero}, Silla ${seleccionActual.sillaNumero}`
+                        : "Confirmar reserva"}
+                </button>
               </div>
-            ) : (
-              <DinnerRoomCanvas
-                evento={evento}
-                selectedSillaId={selectedSillaId}
-                currentAsistenteId={asistente?.id ?? ""}
-                selectionLocked={Boolean(reservaActual) || reservationLoading}
-                onSelectSilla={setSelectedSillaId}
-              />
-            )}
-          </div>
 
-          <div className="mt-6 rounded-3xl bg-stone-100 px-6 py-5">
-            {selectedSillaId && !reservaActual ? (
-              <div className="rounded-3xl border border-amber-200 bg-white px-4 py-4">
-                <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-700">
-                  Seleccion lista
-                </p>
-                <p className="mt-2 text-base leading-7 text-stone-700">
-                  {seleccionActual
-                    ? `Has elegido la Mesa ${seleccionActual.mesaNumero}, Silla ${seleccionActual.sillaNumero}. El siguiente paso es confirmar la reserva.`
-                    : "Ya has elegido una silla. El siguiente paso es confirmar la reserva."}
+              {infoMessage ? (
+                <div className="mt-5 rounded-3xl border border-emerald-200 bg-emerald-50 px-5 py-4 text-emerald-700">
+                  <p className="text-sm font-semibold uppercase tracking-[0.2em]">
+                    Estado
+                  </p>
+                  <p className="mt-2 text-base leading-7">{infoMessage}</p>
+                </div>
+              ) : null}
+
+              {error ? (
+                <div className="mt-5 rounded-3xl border border-rose-200 bg-rose-50 px-5 py-4 text-rose-700">
+                  <p className="text-sm font-semibold uppercase tracking-[0.2em]">
+                    Error
+                  </p>
+                  <p className="mt-2 text-base leading-7">{error}</p>
+                </div>
+              ) : null}
+
+              {selectedSillaId && !reservaActual ? (
+                <div className="mt-5 rounded-3xl border border-amber-200 bg-white px-4 py-4">
+                  <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-700">
+                    Seleccion actual
+                  </p>
+                  <p className="mt-2 text-base leading-7 text-stone-700">
+                    {seleccionActual
+                      ? `Has elegido la Mesa ${seleccionActual.mesaNumero}, Silla ${seleccionActual.sillaNumero}.`
+                      : "Has elegido una silla para confirmar."}
+                  </p>
+                </div>
+              ) : null}
+
+              {!selectedSillaId && evento && !reservaActual ? (
+                <div className="mt-5 rounded-3xl border border-stone-200 bg-white px-4 py-4">
+                  <p className="text-sm font-semibold uppercase tracking-[0.18em] text-stone-500">
+                    Elige una silla
+                  </p>
+                  <p className="mt-2 text-base leading-7 text-stone-600">
+                    Pulsa sobre una silla libre para seleccionarla.
+                  </p>
+                </div>
+              ) : null}
+
+              {reservaActual ? (
+                <div className="mt-5 rounded-3xl border border-sky-200 bg-white px-4 py-4">
+                  <p className="text-sm font-semibold uppercase tracking-[0.18em] text-sky-700">
+                    Reserva existente
+                  </p>
+                  <p className="mt-2 text-base leading-7 text-stone-600">
+                    Este asistente ya tiene asignada la Mesa {reservaActual.mesaNumero},
+                    Silla {reservaActual.sillaNumero}.
+                  </p>
+                </div>
+              ) : null}
+
+              <div className="mt-5 grid gap-3 lg:grid-cols-2 2xl:grid-cols-4">
+                <LegendPill
+                  colorClassName="bg-emerald-500"
+                  title="Silla libre"
+                  description="Puedes elegirla para este asistente."
+                />
+                <LegendPill
+                  colorClassName="bg-rose-500"
+                  title="Silla ocupada"
+                  description="Ya pertenece a otra persona."
+                />
+                <LegendPill
+                  colorClassName="bg-yellow-400"
+                  title="Silla seleccionada"
+                  description="Es la que se va a confirmar."
+                />
+                <LegendPill
+                  colorClassName="bg-sky-500"
+                  title="Tu reserva"
+                  description="Es la silla ya asignada a este asistente."
+                />
+              </div>
+
+              <div className="mt-5 rounded-2xl border border-stone-200 bg-white px-4 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-semibold text-stone-800">Tiempo real</p>
+                  <span
+                    className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] ${
+                      realtimeConnected
+                        ? "bg-emerald-100 text-emerald-700"
+                        : "bg-stone-200 text-stone-600"
+                    }`}
+                  >
+                    {realtimeConnected ? "Activo" : "En espera"}
+                  </span>
+                </div>
+                <p className="mt-1 text-sm leading-6 text-stone-500">
+                  {realtimeConnected
+                    ? "La sala se actualiza automaticamente cuando cambia una reserva."
+                    : "La actualizacion automatica no esta activa en este momento."}
                 </p>
               </div>
-            ) : null}
 
-            {!selectedSillaId && evento && !reservaActual ? (
-              <p className="text-base leading-7 text-stone-600">
-                Pulsa sobre una silla verde para seleccionarla. Si cambias de
-                idea, puedes pulsarla otra vez para desmarcarla.
-              </p>
-            ) : null}
-
-            {reservaActual ? (
-              <p className="text-base leading-7 text-stone-600">
-                La silla azul es la que ya tiene asignada este asistente. En la
-                siguiente fase haremos que este estado llegue desde un flujo mas
-                completo de usuario y navegacion.
-              </p>
-            ) : null}
-
-            {reservationLoading ? (
-              <p className="text-base leading-7 text-stone-600">
-                La interfaz ya ha pintado la reserva de forma optimista mientras
-                se confirma en el servidor.
-              </p>
-            ) : null}
-
-            {!evento ? (
-              <p className="text-base leading-7 text-stone-600">
-                Cuando encontremos al asistente, aqui apareceran las mesas y
-                sillas del evento listas para interactuar.
-              </p>
-            ) : null}
-          </div>
-        </section>
-      </div>
+              {reservationLoading ? (
+                <div className="mt-5 rounded-3xl border border-amber-200 bg-white px-4 py-4">
+                  <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-700">
+                    Guardando
+                  </p>
+                  <p className="mt-2 text-base leading-7 text-stone-600">
+                    Estamos confirmando la reserva.
+                  </p>
+                </div>
+              ) : null}
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   );
 }
