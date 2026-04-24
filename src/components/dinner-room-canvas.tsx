@@ -17,6 +17,7 @@ const BASE_HEIGHT = 420;
 const TABLE_RADIUS = 58;
 const CHAIR_DISTANCE = 104;
 const CHAIR_RADIUS = 18;
+const MOBILE_HIT_RADIUS = 30;
 
 function getChairColor(
   silla: Silla,
@@ -73,10 +74,22 @@ export default function DinnerRoomCanvas({
     [evento.mesas],
   );
 
+  function handleChairSelection(
+    sillaId: string,
+    sillaOcupada: boolean,
+    sillaEsDelAsistente: boolean,
+  ) {
+    if (selectionLocked || sillaOcupada || sillaEsDelAsistente) {
+      return;
+    }
+
+    onSelectSilla(selectedSillaId === sillaId ? null : sillaId);
+  }
+
   return (
     <div
       ref={containerRef}
-      className="overflow-hidden rounded-[28px] border border-stone-200 bg-[linear-gradient(180deg,_#fff,_#fafaf9)]"
+      className="overflow-hidden rounded-[28px] border border-stone-200 bg-[linear-gradient(180deg,_#fff,_#fafaf9)] [touch-action:manipulation]"
     >
       <Stage width={stageWidth} height={stageHeight}>
         <Layer>
@@ -135,18 +148,27 @@ export default function DinnerRoomCanvas({
                   return (
                     <Group
                       key={silla.id}
-                      onClick={() => {
-                        if (
-                          selectionLocked ||
-                          sillaOcupada ||
-                          sillaEsDelAsistente
-                        ) {
-                          return;
-                        }
-
-                        onSelectSilla(selectedSillaId === silla.id ? null : silla.id);
-                      }}
+                      onClick={() =>
+                        handleChairSelection(
+                          silla.id,
+                          sillaOcupada,
+                          sillaEsDelAsistente,
+                        )
+                      }
+                      onTap={() =>
+                        handleChairSelection(
+                          silla.id,
+                          sillaOcupada,
+                          sillaEsDelAsistente,
+                        )
+                      }
                     >
+                      <Circle
+                        x={sillaX}
+                        y={sillaY}
+                        radius={Math.max(chairRadius, MOBILE_HIT_RADIUS * scale)}
+                        fill="rgba(0,0,0,0.001)"
+                      />
                       <Circle
                         x={sillaX}
                         y={sillaY}
@@ -159,6 +181,7 @@ export default function DinnerRoomCanvas({
                         shadowColor="#000000"
                         shadowBlur={10 * scale}
                         shadowOpacity={0.12}
+                        listening={false}
                       />
                       <Text
                         x={sillaX - 10 * scale}
@@ -168,6 +191,7 @@ export default function DinnerRoomCanvas({
                         text={String(silla.numero)}
                         fontSize={12 * scale}
                         fill="#111827"
+                        listening={false}
                       />
                     </Group>
                   );
