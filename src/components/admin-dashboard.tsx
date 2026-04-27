@@ -4,6 +4,7 @@ import { FormEvent, ReactNode, useEffect, useMemo, useState, useTransition } fro
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
+import AdminTableLayoutEditor from "@/components/admin-table-layout-editor";
 import ToastStack, { ToastItem } from "@/components/toast-stack";
 import {
   AdminEventSummary,
@@ -147,6 +148,17 @@ function FieldInputClass(disabled?: boolean) {
   }`;
 }
 
+function getNextMesaPosition(existingTables: number) {
+  const columns = 3;
+  const col = existingTables % columns;
+  const row = Math.floor(existingTables / columns);
+
+  return {
+    posX: 150 + col * 220,
+    posY: 130 + row * 140,
+  };
+}
+
 export default function AdminDashboard({
   events,
   selectedEventId,
@@ -170,12 +182,8 @@ export default function AdminDashboard({
   const [asistenteEditIdentificador, setAsistenteEditIdentificador] = useState("");
 
   const [mesaNumero, setMesaNumero] = useState("1");
-  const [mesaPosX, setMesaPosX] = useState("220");
-  const [mesaPosY, setMesaPosY] = useState("180");
   const [mesaEditId, setMesaEditId] = useState("");
   const [mesaEditNumero, setMesaEditNumero] = useState("1");
-  const [mesaEditPosX, setMesaEditPosX] = useState("220");
-  const [mesaEditPosY, setMesaEditPosY] = useState("180");
 
   const [mesaSeleccionadaId, setMesaSeleccionadaId] = useState("");
   const [sillaNumero, setSillaNumero] = useState("1");
@@ -276,8 +284,6 @@ export default function AdminDashboard({
     setMesaSeleccionadaId(firstMesa?.id ?? "");
     setMesaEditId(firstMesa?.id ?? "");
     setMesaEditNumero(String(firstMesa?.numero ?? 1));
-    setMesaEditPosX(String(firstMesa?.pos_x ?? 220));
-    setMesaEditPosY(String(firstMesa?.pos_y ?? 180));
 
     setAsistenteSeleccionadoId(firstAsistente?.id ?? "");
     setAsistenteEditId(firstAsistente?.id ?? "");
@@ -305,8 +311,6 @@ export default function AdminDashboard({
     }
 
     setMesaEditNumero(String(mesaEditActual.numero));
-    setMesaEditPosX(String(mesaEditActual.pos_x));
-    setMesaEditPosY(String(mesaEditActual.pos_y));
   }, [mesaEditActual]);
 
   useEffect(() => {
@@ -488,13 +492,15 @@ export default function AdminDashboard({
       return;
     }
 
+    const nextPosition = getNextMesaPosition(panelData?.evento.mesas.length ?? 0);
+
     const created = await runAdminAction(
       "/api/admin/mesas/create",
       {
         eventoId: selectedEventId,
         numero: mesaNumero,
-        posX: mesaPosX,
-        posY: mesaPosY,
+        posX: nextPosition.posX,
+        posY: nextPosition.posY,
       },
       "Mesa creada",
     );
@@ -517,10 +523,34 @@ export default function AdminDashboard({
         mesaId: mesaEditId,
         eventoId: selectedEventId,
         numero: mesaEditNumero,
-        posX: mesaEditPosX,
-        posY: mesaEditPosY,
+        posX: mesaEditActual?.pos_x ?? 220,
+        posY: mesaEditActual?.pos_y ?? 180,
       },
       "Mesa actualizada",
+    );
+  }
+
+  async function handleMoveMesa(mesaId: string, posX: number, posY: number) {
+    if (!selectedEventId) {
+      return;
+    }
+
+    const mesa = (panelData?.evento.mesas ?? []).find((item) => item.id === mesaId);
+
+    if (!mesa) {
+      return;
+    }
+
+    await runAdminAction(
+      "/api/admin/mesas/update",
+      {
+        mesaId,
+        eventoId: selectedEventId,
+        numero: mesa.numero,
+        posX,
+        posY,
+      },
+      "Mesa recolocada",
     );
   }
 
@@ -1056,8 +1086,16 @@ export default function AdminDashboard({
             <AdminCard
               eyebrow="Plano"
               title="Resumen de estructura"
-              description="Un vistazo rapido a las mesas del evento, sus posiciones y cuantas sillas tiene cada una."
+              description="Un vistazo rapido a las mesas del evento. Puedes arrastrarlas para recolocarlas en la sala."
             >
+              <AdminTableLayoutEditor
+                mesas={panelData?.evento.mesas ?? []}
+                selectedMesaId={mesaEditId}
+                onSelectMesa={setMesaEditId}
+                onMoveMesa={handleMoveMesa}
+                disabled={isPending}
+              />
+
               <div className="grid gap-3 sm:grid-cols-2">
                 {(panelData?.evento.mesas ?? []).length === 0 ? (
                   <div className="rounded-3xl border border-dashed border-stone-300 bg-stone-50 px-5 py-5 text-sm leading-7 text-stone-500">
@@ -1071,9 +1109,6 @@ export default function AdminDashboard({
                     >
                       <p className="text-base font-semibold text-stone-900">
                         Mesa {mesa.numero}
-                      </p>
-                      <p className="mt-2 text-sm leading-6 text-stone-600">
-                        Posicion: X {mesa.pos_x}, Y {mesa.pos_y}
                       </p>
                       <p className="mt-1 text-sm leading-6 text-stone-600">
                         Sillas: {mesa.sillas.length}
@@ -1198,7 +1233,7 @@ export default function AdminDashboard({
             <AdminCard
               eyebrow="Mesas"
               title="Crear, editar y eliminar mesas"
-              description="Aqui defines las mesas del evento y las coordenadas con las que apareceran despues dentro del plano visual."
+              description="Crea mesas nuevas y cambia su numero. La posicion ahora se gestiona arrastrandolas en el editor visual."
             >
               <div className="grid gap-6 xl:grid-cols-[1fr_1fr]">
                 <form className="grid gap-4" onSubmit={handleUpdateMesa}>
@@ -1230,25 +1265,10 @@ export default function AdminDashboard({
                         className={FieldInputClass(!mesaEditId)}
                       />
                     </AdminField>
-                    <AdminField label="Nueva posicion X">
-                      <input
-                        type="number"
-                        value={mesaEditPosX}
-                        onChange={(event) => setMesaEditPosX(event.target.value)}
-                        disabled={!mesaEditId}
-                        className={FieldInputClass(!mesaEditId)}
-                      />
-                    </AdminField>
-                    <AdminField label="Nueva posicion Y">
-                      <input
-                        type="number"
-                        value={mesaEditPosY}
-                        onChange={(event) => setMesaEditPosY(event.target.value)}
-                        disabled={!mesaEditId}
-                        className={FieldInputClass(!mesaEditId)}
-                      />
-                    </AdminField>
                   </div>
+                  <p className="text-sm leading-6 text-stone-600">
+                    La posicion de esta mesa se cambia arrastrandola dentro del editor visual de arriba.
+                  </p>
                   <div className="flex flex-wrap gap-3">
                     <button
                       type="submit"
@@ -1270,39 +1290,15 @@ export default function AdminDashboard({
 
                 <form className="grid gap-4" onSubmit={handleCreateMesa}>
                   <DividerLabel>Crear mesa</DividerLabel>
-                  <div className="grid gap-4 lg:grid-cols-3">
+                  <div className="grid gap-4">
                     <AdminField
                       label="Numero de mesa"
-                      hint="Es el numero visible para organizar la sala."
+                      hint="La nueva mesa aparecera colocada automaticamente y luego podras moverla arrastrando."
                     >
                       <input
                         type="number"
                         value={mesaNumero}
                         onChange={(event) => setMesaNumero(event.target.value)}
-                        disabled={!selectedEventId}
-                        className={FieldInputClass(!selectedEventId)}
-                      />
-                    </AdminField>
-                    <AdminField
-                      label="Posicion X"
-                      hint="Movimiento horizontal dentro del plano."
-                    >
-                      <input
-                        type="number"
-                        value={mesaPosX}
-                        onChange={(event) => setMesaPosX(event.target.value)}
-                        disabled={!selectedEventId}
-                        className={FieldInputClass(!selectedEventId)}
-                      />
-                    </AdminField>
-                    <AdminField
-                      label="Posicion Y"
-                      hint="Movimiento vertical dentro del plano."
-                    >
-                      <input
-                        type="number"
-                        value={mesaPosY}
-                        onChange={(event) => setMesaPosY(event.target.value)}
                         disabled={!selectedEventId}
                         className={FieldInputClass(!selectedEventId)}
                       />

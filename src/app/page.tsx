@@ -18,8 +18,8 @@ import {
 } from "@/lib/dinner-room";
 import { supabase } from "@/lib/supabase";
 
-const DinnerRoomCanvas = dynamic(
-  () => import("@/components/dinner-room-canvas"),
+const DinnerRoomScene = dynamic(
+  () => import("@/components/dinner-room-scene"),
   {
     ssr: false,
     loading: () => (
@@ -419,7 +419,7 @@ export default function Home() {
                 href="/admin"
                 className="inline-flex min-w-[220px] items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-4 text-sm font-semibold uppercase tracking-[0.2em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
               >
-                ¿Eres Administrador?
+                Eres administrador?
               </Link>
             </div>
           </form>
@@ -473,7 +473,7 @@ export default function Home() {
                   No se ha podido cargar la sala del evento.
                 </div>
               ) : (
-                <DinnerRoomCanvas
+                <DinnerRoomScene
                   evento={evento}
                   selectedSillaId={selectedSillaId}
                   currentAsistenteId={asistente?.id ?? ""}
