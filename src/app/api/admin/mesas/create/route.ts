@@ -25,14 +25,18 @@ export async function POST(request: Request) {
     );
   }
 
-  const { eventoId, numero, posX, posY } = parsedBody.data;
+  const { eventoId, numero, chairCount, posX, posY } = parsedBody.data;
 
-  const { error } = await supabaseAdmin.from("mesas").insert({
-    evento_id: eventoId,
-    numero,
-    pos_x: posX,
-    pos_y: posY,
-  });
+  const { data: mesaCreada, error } = await supabaseAdmin
+    .from("mesas")
+    .insert({
+      evento_id: eventoId,
+      numero,
+      pos_x: posX,
+      pos_y: posY,
+    })
+    .select("id")
+    .single();
 
   if (error) {
     if (error.code === "23505") {
@@ -48,7 +52,22 @@ export async function POST(request: Request) {
     );
   }
 
+  const sillas = Array.from({ length: chairCount }, (_, index) => ({
+    mesa_id: mesaCreada.id,
+    numero: index + 1,
+  }));
+
+  const { error: chairsError } = await supabaseAdmin.from("sillas").insert(sillas);
+
+  if (chairsError) {
+    return NextResponse.json(
+      { error: "La mesa se creo pero no se pudieron crear sus sillas." },
+      { status: 500 },
+    );
+  }
+
   return NextResponse.json({
-    message: "Mesa creada correctamente.",
+    message: `Mesa creada correctamente con ${chairCount} sillas.`,
+    mesaId: mesaCreada.id,
   });
 }

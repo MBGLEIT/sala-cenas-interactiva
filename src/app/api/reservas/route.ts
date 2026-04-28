@@ -17,7 +17,14 @@ export async function POST(request: Request) {
     );
   }
 
-  const { sillaId, asistenteId } = parsedBody.data;
+  const {
+    sillaId,
+    asistenteId,
+    esCeliaco,
+    tieneAlergias,
+    movilidadReducida,
+    observaciones,
+  } = parsedBody.data;
 
   const [asistenteResult, sillaResult] = await Promise.all([
     supabase
@@ -118,8 +125,14 @@ export async function POST(request: Request) {
     .insert({
       silla_id: sillaId,
       asistente_id: asistenteId,
+      es_celiaco: esCeliaco,
+      tiene_alergias: tieneAlergias,
+      movilidad_reducida: movilidadReducida,
+      observaciones: observaciones || null,
     })
-    .select("id, silla_id, asistente_id, created_at")
+    .select(
+      "id, silla_id, asistente_id, created_at, es_celiaco, tiene_alergias, movilidad_reducida, observaciones",
+    )
     .single();
 
   if (error) {

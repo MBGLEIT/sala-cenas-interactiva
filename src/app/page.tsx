@@ -80,6 +80,10 @@ export default function Home() {
   const [asistente, setAsistente] = useState<AsistenteEncontrado | null>(null);
   const [evento, setEvento] = useState<EventoSala | null>(null);
   const [selectedSillaId, setSelectedSillaId] = useState<string | null>(null);
+  const [esCeliaco, setEsCeliaco] = useState(false);
+  const [tieneAlergias, setTieneAlergias] = useState(false);
+  const [movilidadReducida, setMovilidadReducida] = useState(false);
+  const [observacionesReserva, setObservacionesReserva] = useState("");
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const selectedSillaIdRef = useRef<string | null>(null);
   const asistenteIdRef = useRef<string | null>(null);
@@ -119,6 +123,10 @@ export default function Home() {
     setAsistente(null);
     setEvento(null);
     setSelectedSillaId(null);
+    setEsCeliaco(false);
+    setTieneAlergias(false);
+    setMovilidadReducida(false);
+    setObservacionesReserva("");
     setRealtimeConnected(false);
   }
 
@@ -249,6 +257,10 @@ export default function Home() {
     setAsistente(null);
     setEvento(null);
     setSelectedSillaId(null);
+    setEsCeliaco(false);
+    setTieneAlergias(false);
+    setMovilidadReducida(false);
+    setObservacionesReserva("");
 
     try {
       const response = await fetch(
@@ -326,6 +338,10 @@ export default function Home() {
         body: JSON.stringify({
           sillaId: selectedSillaId,
           asistenteId: asistente.id,
+          esCeliaco,
+          tieneAlergias,
+          movilidadReducida,
+          observaciones: observacionesReserva,
         }),
       });
 
@@ -354,6 +370,10 @@ export default function Home() {
       const message = result.message ?? "Reserva creada correctamente.";
 
       setInfoMessage(message);
+      setEsCeliaco(false);
+      setTieneAlergias(false);
+      setMovilidadReducida(false);
+      setObservacionesReserva("");
       pushToast({
         tone: "success",
         title: "Reserva confirmada",
@@ -541,6 +561,55 @@ export default function Home() {
                       ? `Has elegido la Mesa ${seleccionActual.mesaNumero}, Silla ${seleccionActual.sillaNumero}.`
                       : "Has elegido una silla para confirmar."}
                   </p>
+                </div>
+              ) : null}
+
+              {selectedSillaId && !reservaActual ? (
+                <div className="mt-5 rounded-3xl border border-stone-200 bg-white px-4 py-4">
+                  <p className="text-sm font-semibold uppercase tracking-[0.18em] text-stone-600">
+                    Datos importantes para la cena
+                  </p>
+                  <div className="mt-4 grid gap-3 md:grid-cols-3">
+                    <label className="flex items-center gap-3 rounded-2xl border border-stone-200 px-4 py-3 text-sm text-stone-700">
+                      <input
+                        type="checkbox"
+                        checked={esCeliaco}
+                        onChange={(event) => setEsCeliaco(event.target.checked)}
+                        className="h-4 w-4 rounded border-stone-300 text-emerald-600 focus:ring-emerald-500"
+                      />
+                      Es celiaco
+                    </label>
+                    <label className="flex items-center gap-3 rounded-2xl border border-stone-200 px-4 py-3 text-sm text-stone-700">
+                      <input
+                        type="checkbox"
+                        checked={tieneAlergias}
+                        onChange={(event) => setTieneAlergias(event.target.checked)}
+                        className="h-4 w-4 rounded border-stone-300 text-emerald-600 focus:ring-emerald-500"
+                      />
+                      Tiene alergias
+                    </label>
+                    <label className="flex items-center gap-3 rounded-2xl border border-stone-200 px-4 py-3 text-sm text-stone-700">
+                      <input
+                        type="checkbox"
+                        checked={movilidadReducida}
+                        onChange={(event) => setMovilidadReducida(event.target.checked)}
+                        className="h-4 w-4 rounded border-stone-300 text-emerald-600 focus:ring-emerald-500"
+                      />
+                      Movilidad reducida
+                    </label>
+                  </div>
+                  <label className="mt-4 block">
+                    <span className="text-sm font-semibold text-stone-600">
+                      Observaciones relevantes
+                    </span>
+                    <textarea
+                      value={observacionesReserva}
+                      onChange={(event) => setObservacionesReserva(event.target.value)}
+                      placeholder="Ejemplo: alergia a frutos secos, sin lactosa o necesita acceso facil."
+                      rows={3}
+                      className="mt-2 w-full rounded-2xl border border-stone-300 bg-stone-50 px-4 py-3 text-sm text-stone-900 outline-none transition focus:border-amber-500 focus:bg-white"
+                    />
+                  </label>
                 </div>
               ) : null}
 

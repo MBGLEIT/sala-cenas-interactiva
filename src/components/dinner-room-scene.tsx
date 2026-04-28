@@ -2,16 +2,20 @@
 
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
-import {
-  ContactShadows,
-  OrthographicCamera,
-  OrbitControls,
-  PerspectiveCamera,
-  RoundedBox,
-  Text,
-} from "@react-three/drei";
+import { ContactShadows, OrbitControls, PerspectiveCamera, Text } from "@react-three/drei";
+import { MOUSE } from "three";
 
-import { EventoSala, Silla, normalizeReservas } from "@/lib/dinner-room";
+import DinnerRoomHall3D from "@/components/dinner-room-hall-3d";
+import DinnerRoomPlan2D from "@/components/dinner-room-plan-2d";
+import DinnerRoomTable3D from "@/components/dinner-room-table-3d";
+import { EventoSala } from "@/lib/dinner-room";
+import {
+  ROOM_LAYOUT_HEIGHT,
+  ROOM_LAYOUT_WIDTH,
+  ROOM_WORLD_SCALE,
+  getEventBounds,
+  roomPointToWorld,
+} from "@/lib/room-layout";
 
 type DinnerRoomSceneProps = {
   evento: EventoSala;
@@ -21,14 +25,7 @@ type DinnerRoomSceneProps = {
   onSelectSilla: (sillaId: string | null) => void;
 };
 
-const BASE_WIDTH = 760;
-const BASE_HEIGHT = 420;
-const ROOM_SCALE = 0.03;
-const TABLE_RADIUS = 1.42;
-const TABLE_HEIGHT = 0.22;
-const CHAIR_DISTANCE = 2.5;
-const HIT_RADIUS = 0.72;
-type ViewMode = "3d" | "plan";
+type ViewMode = "3d" | "2d";
 
 function browserSupportsWebGL() {
   if (typeof window === "undefined") {
@@ -48,525 +45,104 @@ function browserSupportsWebGL() {
   }
 }
 
-function getChairColor(
-  silla: Silla,
-  selectedSillaId: string | null,
-  currentAsistenteId: string,
-) {
-  const reservas = normalizeReservas(silla.reservas);
-  const reservaActual = reservas[0];
-
-  if (selectedSillaId === silla.id) {
-    return "#facc15";
-  }
-
-  if (reservaActual?.asistente_id === currentAsistenteId) {
-    return "#0ea5e9";
-  }
-
-  if (reservaActual) {
-    return "#ef4444";
-  }
-
-  return "#22c55e";
-}
-
-function TableLabel({
-  position,
-  text,
+function EventLabel({
+  evento,
+  zPosition,
 }: {
-  position: [number, number, number];
-  text: string;
+  evento: EventoSala;
+  zPosition: number;
 }) {
+  const roomWorldWidth = ROOM_LAYOUT_WIDTH * ROOM_WORLD_SCALE;
+
   return (
     <Text
-      position={position}
-      fontSize={0.3}
-      color="#fefce8"
-      anchorX="center"
-      anchorY="middle"
-    >
-      {text}
-    </Text>
-  );
-}
-
-function BallroomShell() {
-  return (
-    <>
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.78, 0]} receiveShadow>
-        <planeGeometry args={[30, 20]} />
-        <meshStandardMaterial color="#d8c7a0" roughness={0.95} />
-      </mesh>
-
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.76, 0]} receiveShadow>
-        <planeGeometry args={[18, 10]} />
-        <meshStandardMaterial color="#7f1d1d" roughness={0.88} metalness={0.08} />
-      </mesh>
-
-      <mesh position={[0, 3.2, -8.8]} receiveShadow>
-        <boxGeometry args={[30, 8, 0.45]} />
-        <meshStandardMaterial color="#f3ece1" roughness={0.92} />
-      </mesh>
-
-      <mesh position={[-14.6, 2.7, 0]} receiveShadow>
-        <boxGeometry args={[0.45, 7, 18]} />
-        <meshStandardMaterial color="#efe7d8" roughness={0.92} />
-      </mesh>
-
-      <mesh position={[14.6, 2.7, 0]} receiveShadow>
-        <boxGeometry args={[0.45, 7, 18]} />
-        <meshStandardMaterial color="#efe7d8" roughness={0.92} />
-      </mesh>
-
-      <mesh position={[0, 0.15, -8.45]} receiveShadow>
-        <boxGeometry args={[30, 1.6, 0.8]} />
-        <meshStandardMaterial color="#5b4636" roughness={0.9} />
-      </mesh>
-
-      {[-8.5, 0, 8.5].map((x) => (
-        <group key={x} position={[x, 3.2, -8.55]}>
-          <mesh>
-            <boxGeometry args={[4.4, 3.4, 0.12]} />
-            <meshStandardMaterial color="#d1a054" roughness={0.45} metalness={0.55} />
-          </mesh>
-          <mesh position={[0, 0, 0.09]}>
-            <boxGeometry args={[3.7, 2.7, 0.08]} />
-            <meshStandardMaterial color="#fff8dc" emissive="#ffe8a3" emissiveIntensity={0.28} />
-          </mesh>
-        </group>
-      ))}
-
-      {[-6, 0, 6].map((x) => (
-        <group key={`lamp-${x}`} position={[x, 5.4, -5.4]}>
-          <mesh castShadow>
-            <cylinderGeometry args={[0.08, 0.08, 1.1, 20]} />
-            <meshStandardMaterial color="#b8860b" metalness={0.7} roughness={0.28} />
-          </mesh>
-          <mesh position={[0, -0.75, 0]}>
-            <sphereGeometry args={[0.28, 24, 24]} />
-            <meshStandardMaterial color="#fff4c2" emissive="#ffe8a3" emissiveIntensity={0.9} />
-          </mesh>
-        </group>
-      ))}
-    </>
-  );
-}
-
-function TableModel({ number }: { number: number }) {
-  return (
-    <group>
-      <mesh castShadow position={[0, -0.5, 0]}>
-        <cylinderGeometry args={[0.14, 0.22, 1.04, 20]} />
-        <meshStandardMaterial color="#6b7280" roughness={0.55} metalness={0.45} />
-      </mesh>
-
-      <mesh castShadow receiveShadow position={[0, 0.02, 0]}>
-        <cylinderGeometry
-          args={[TABLE_RADIUS + 0.16, TABLE_RADIUS + 0.16, TABLE_HEIGHT, 56]}
-        />
-        <meshStandardMaterial color="#f8fafc" roughness={0.96} />
-      </mesh>
-
-      <mesh castShadow receiveShadow position={[0, 0.14, 0]}>
-        <cylinderGeometry args={[TABLE_RADIUS, TABLE_RADIUS, 0.08, 56]} />
-        <meshStandardMaterial color="#e7e5e4" roughness={0.92} />
-      </mesh>
-
-      <mesh castShadow position={[0, 0.24, 0]}>
-        <cylinderGeometry args={[0.14, 0.14, 0.2, 20]} />
-        <meshStandardMaterial color="#d4af37" metalness={0.65} roughness={0.28} />
-      </mesh>
-
-      <mesh castShadow position={[0, 0.38, 0]}>
-        <sphereGeometry args={[0.09, 20, 20]} />
-        <meshStandardMaterial color="#7f1d1d" roughness={0.7} />
-      </mesh>
-
-      <TableLabel position={[0, 0.28, 0]} text={`Mesa ${number}`} />
-    </group>
-  );
-}
-
-function ChairModel({
-  color,
-  number,
-  selected,
-}: {
-  color: string;
-  number: number;
-  selected: boolean;
-}) {
-  const frameColor = "#4b5563";
-
-  return (
-    <group>
-      <RoundedBox
-        args={[0.82, 0.12, 0.82]}
-        radius={0.08}
-        smoothness={4}
-        position={[0, 0.12, 0]}
-        castShadow
-        receiveShadow
-      >
-        <meshStandardMaterial
-          color={color}
-          roughness={0.42}
-          metalness={0.12}
-          emissive={selected ? "#7c2d12" : "#000000"}
-          emissiveIntensity={selected ? 0.24 : 0}
-        />
-      </RoundedBox>
-
-      <RoundedBox
-        args={[0.86, 0.9, 0.16]}
-        radius={0.06}
-        smoothness={4}
-        position={[0, 0.68, -0.3]}
-        castShadow
-      >
-        <meshStandardMaterial color="#f5f5f4" roughness={0.6} metalness={0.06} />
-      </RoundedBox>
-
-      <RoundedBox
-        args={[0.66, 0.64, 0.08]}
-        radius={0.04}
-        smoothness={4}
-        position={[0, 0.68, -0.19]}
-        castShadow
-      >
-        <meshStandardMaterial color={color} roughness={0.4} metalness={0.08} />
-      </RoundedBox>
-
-      {[
-        [-0.28, -0.23, -0.28],
-        [0.28, -0.23, -0.28],
-        [-0.28, -0.23, 0.28],
-        [0.28, -0.23, 0.28],
-      ].map((position, index) => (
-        <mesh key={index} castShadow position={position as [number, number, number]}>
-          <cylinderGeometry args={[0.045, 0.055, 0.7, 12]} />
-          <meshStandardMaterial color={frameColor} roughness={0.65} metalness={0.22} />
-        </mesh>
-      ))}
-
-      <Text
-        position={[0, 0.19, 0.01]}
-        fontSize={0.18}
-        color="#111827"
-        anchorX="center"
-        anchorY="middle"
-      >
-        {String(number)}
-      </Text>
-    </group>
-  );
-}
-
-function EventLabel({ evento }: { evento: EventoSala }) {
-  return (
-    <Text
-      position={[0, 4.75, -8.2]}
-      fontSize={0.48}
+      position={[0, 3.2, zPosition]}
+      fontSize={0.5}
       color="#3f3f46"
       anchorX="center"
       anchorY="middle"
-      maxWidth={14}
+      maxWidth={roomWorldWidth * 0.7}
     >
       {`${evento.nombre} - ${evento.fecha}`}
     </Text>
   );
 }
 
-function PlanFallback({
-  evento,
-  selectedSillaId,
-  currentAsistenteId,
-  selectionLocked,
-  onSelectSilla,
-}: DinnerRoomSceneProps) {
-  function handleChairSelection(
-    sillaId: string,
-    sillaOcupada: boolean,
-    sillaEsDelAsistente: boolean,
-  ) {
-    if (selectionLocked || sillaOcupada || sillaEsDelAsistente) {
-      return;
-    }
-
-    onSelectSilla(selectedSillaId === sillaId ? null : sillaId);
-  }
-
-  return (
-    <div className="flex h-full flex-col bg-[linear-gradient(180deg,_#ffffff,_#fafaf9)]">
-      <div className="flex items-center justify-between border-b border-stone-200 px-5 py-4">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-700">
-            Vista compatible
-          </p>
-          <p className="mt-1 text-sm text-stone-600">
-            Este navegador no admite 3D aqui. Mostramos el plano interactivo.
-          </p>
-        </div>
-        <span className="rounded-full bg-stone-950 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-white">
-          2D
-        </span>
-      </div>
-
-      <div className="flex-1 p-4">
-        <svg
-          viewBox={`0 0 ${BASE_WIDTH} ${BASE_HEIGHT}`}
-          className="h-full w-full rounded-[24px] border border-stone-200 bg-stone-50"
-        >
-          <rect
-            x="0"
-            y="0"
-            width={BASE_WIDTH}
-            height={BASE_HEIGHT}
-            rx="24"
-            fill="#fafaf9"
-          />
-          <text
-            x={BASE_WIDTH / 2}
-            y="34"
-            textAnchor="middle"
-            fontSize="18"
-            fontWeight="700"
-            fill="#44403c"
-          >
-            {evento.nombre}
-          </text>
-
-          {evento.mesas.map((mesa) => (
-            <g key={mesa.id}>
-              {mesa.sillas.map((silla, index) => {
-                const angle =
-                  -Math.PI / 2 + (index * (Math.PI * 2)) / mesa.sillas.length;
-                const chairDistance = 68;
-                const sillaX = mesa.pos_x + Math.cos(angle) * chairDistance;
-                const sillaY = mesa.pos_y + Math.sin(angle) * chairDistance;
-                const reservas = normalizeReservas(silla.reservas);
-                const sillaOcupada = reservas.length > 0;
-                const sillaEsDelAsistente =
-                  reservas[0]?.asistente_id === currentAsistenteId;
-                const sillaColor = getChairColor(
-                  silla,
-                  selectedSillaId,
-                  currentAsistenteId,
-                );
-
-                return (
-                  <g key={silla.id}>
-                    <circle
-                      cx={sillaX}
-                      cy={sillaY}
-                      r="20"
-                      fill="transparent"
-                      onClick={() =>
-                        handleChairSelection(
-                          silla.id,
-                          sillaOcupada,
-                          sillaEsDelAsistente,
-                        )
-                      }
-                      onPointerUp={() =>
-                        handleChairSelection(
-                          silla.id,
-                          sillaOcupada,
-                          sillaEsDelAsistente,
-                        )
-                      }
-                    />
-                    <circle
-                      cx={sillaX}
-                      cy={sillaY}
-                      r="14"
-                      fill={sillaColor}
-                      stroke="#ffffff"
-                      strokeWidth="3"
-                    />
-                    <text
-                      x={sillaX}
-                      y={sillaY + 4}
-                      textAnchor="middle"
-                      fontSize="11"
-                      fontWeight="700"
-                      fill="#111827"
-                    >
-                      {silla.numero}
-                    </text>
-                  </g>
-                );
-              })}
-
-              <circle
-                cx={mesa.pos_x}
-                cy={mesa.pos_y}
-                r="42"
-                fill="#292524"
-                stroke="#57534e"
-                strokeWidth="2"
-              />
-              <text
-                x={mesa.pos_x}
-                y={mesa.pos_y + 6}
-                textAnchor="middle"
-                fontSize="16"
-                fontWeight="700"
-                fill="#fefce8"
-              >
-                {`Mesa ${mesa.numero}`}
-              </text>
-            </g>
-          ))}
-        </svg>
-      </div>
-    </div>
-  );
-}
-
-function SceneContent({
-  evento,
-  selectedSillaId,
-  currentAsistenteId,
-  selectionLocked,
-  onSelectSilla,
-  viewMode,
-}: DinnerRoomSceneProps & { viewMode: ViewMode }) {
+function SceneContent(props: DinnerRoomSceneProps) {
   const mesas = useMemo(
-    () => [...evento.mesas].sort((a, b) => a.numero - b.numero),
-    [evento.mesas],
+    () => [...props.evento.mesas].sort((a, b) => a.numero - b.numero),
+    [props.evento.mesas],
   );
-  const isPlanView = viewMode === "plan";
-
-  function handleChairSelection(
-    sillaId: string,
-    sillaOcupada: boolean,
-    sillaEsDelAsistente: boolean,
-  ) {
-    if (selectionLocked || sillaOcupada || sillaEsDelAsistente) {
-      return;
-    }
-
-    onSelectSilla(selectedSillaId === sillaId ? null : sillaId);
-  }
+  const bounds = useMemo(() => getEventBounds(mesas), [mesas]);
+  const roomWorldWidth = ROOM_LAYOUT_WIDTH * ROOM_WORLD_SCALE;
+  const roomWorldDepth = ROOM_LAYOUT_HEIGHT * ROOM_WORLD_SCALE;
+  const targetPoint = roomPointToWorld(bounds.centerX, bounds.centerY);
+  const spread = Math.max(bounds.width * ROOM_WORLD_SCALE, bounds.height * ROOM_WORLD_SCALE);
+  const cameraDistance = Math.min(Math.max(15, spread * 2.4), 28);
 
   return (
     <>
       <color attach="background" args={["#f6f1e8"]} />
-      <fog attach="fog" args={["#f6f1e8", 11, 28]} />
-      <ambientLight intensity={1.15} />
-      <hemisphereLight intensity={0.8} color="#fff7ed" groundColor="#b45309" />
+      <fog attach="fog" args={["#f6f1e8", 24, 62]} />
+      <ambientLight intensity={0.92} />
+      <hemisphereLight intensity={0.58} color="#fff7ed" groundColor="#8b5e3c" />
       <directionalLight
-        position={[8, 11, 5]}
-        intensity={1.35}
+        position={[10, 14, 8]}
+        intensity={0.92}
         color="#fff7ed"
         castShadow
       />
-      <spotLight
-        position={[-10, 14, 4]}
-        angle={0.42}
-        penumbra={0.5}
-        intensity={0.9}
-        color="#ffffff"
-      />
 
-      {viewMode === "3d" ? (
-        <PerspectiveCamera makeDefault position={[0, 8.4, 13.4]} fov={38} />
-      ) : (
-        <OrthographicCamera
-          makeDefault
-          position={[0, 18, 0.01]}
-          rotation={[-Math.PI / 2, 0, 0]}
-          zoom={48}
-        />
-      )}
+      <PerspectiveCamera
+        makeDefault
+        position={[targetPoint.x, 13.5, targetPoint.z + cameraDistance]}
+        fov={42}
+      />
       <OrbitControls
-        key={viewMode}
-        enablePan={isPlanView}
-        enableRotate={!isPlanView}
-        minDistance={isPlanView ? 10 : 8}
-        maxDistance={isPlanView ? 18 : 18}
-        minZoom={38}
-        maxZoom={66}
-        minPolarAngle={isPlanView ? Math.PI / 2 : 0.24}
-        maxPolarAngle={isPlanView ? Math.PI / 2 : 1.52}
-        target={[0, 0.25, -0.8]}
+        enablePan
+        enableRotate
+        enableZoom
+        makeDefault
+        dampingFactor={0.08}
+        minDistance={8}
+        maxDistance={52}
+        minPolarAngle={0.22}
+        maxPolarAngle={1.3}
+        target={[targetPoint.x, 0.25, targetPoint.z]}
+        mouseButtons={{
+          LEFT: MOUSE.ROTATE,
+          MIDDLE: MOUSE.DOLLY,
+          RIGHT: MOUSE.PAN,
+        }}
       />
 
-      <BallroomShell />
-      <EventLabel evento={evento} />
+      <DinnerRoomHall3D width={roomWorldWidth + 4} depth={roomWorldDepth + 4} />
+      <EventLabel evento={props.evento} zPosition={-(roomWorldDepth / 2) + 1.8} />
 
       {mesas.map((mesa) => {
-        const mesaX = (mesa.pos_x - BASE_WIDTH / 2) * ROOM_SCALE;
-        const mesaZ = (mesa.pos_y - BASE_HEIGHT / 2) * ROOM_SCALE;
+        const worldPosition = roomPointToWorld(mesa.pos_x, mesa.pos_y);
 
         return (
-          <group key={mesa.id} position={[mesaX, 0, mesaZ]}>
-            <TableModel number={mesa.numero} />
-
-            {mesa.sillas.map((silla, index) => {
-              const reservas = normalizeReservas(silla.reservas);
-              const angle =
-                -Math.PI / 2 + (index * (Math.PI * 2)) / mesa.sillas.length;
-              const sillaX = Math.cos(angle) * CHAIR_DISTANCE;
-              const sillaZ = Math.sin(angle) * CHAIR_DISTANCE;
-              const sillaOcupada = reservas.length > 0;
-              const sillaEsDelAsistente =
-                reservas[0]?.asistente_id === currentAsistenteId;
-              const sillaColor = getChairColor(
-                silla,
-                selectedSillaId,
-                currentAsistenteId,
-              );
-              const rotationY = -angle;
-
-              return (
-                <group
-                  key={silla.id}
-                  position={[sillaX, 0, sillaZ]}
-                  rotation={[0, rotationY, 0]}
-                >
-                  <mesh
-                    onClick={() =>
-                      handleChairSelection(
-                        silla.id,
-                        sillaOcupada,
-                        sillaEsDelAsistente,
-                      )
-                    }
-                    onPointerUp={() =>
-                      handleChairSelection(
-                        silla.id,
-                        sillaOcupada,
-                        sillaEsDelAsistente,
-                      )
-                    }
-                    castShadow
-                    position={[0, 0.08, 0]}
-                  >
-                    <cylinderGeometry args={[HIT_RADIUS, HIT_RADIUS, 0.3, 24]} />
-                    <meshBasicMaterial transparent opacity={0.01} depthWrite={false} />
-                  </mesh>
-
-                  <ChairModel
-                    color={sillaColor}
-                    number={silla.numero}
-                    selected={selectedSillaId === silla.id}
-                  />
-                </group>
-              );
-            })}
+          <group key={mesa.id} position={[worldPosition.x, 0, worldPosition.z]}>
+            <DinnerRoomTable3D
+              mesaId={mesa.id}
+              mesaNumero={mesa.numero}
+              sillas={mesa.sillas}
+              selectedSillaId={props.selectedSillaId}
+              currentAsistenteId={props.currentAsistenteId}
+              selectionLocked={props.selectionLocked}
+              onSelectSilla={props.onSelectSilla}
+            />
           </group>
         );
       })}
 
       <ContactShadows
         position={[0, -0.71, 0]}
-        scale={26}
-        blur={2.9}
-        opacity={0.3}
-        far={12}
+        scale={56}
+        blur={3.4}
+        opacity={0.28}
+        far={28}
       />
     </>
   );
@@ -574,15 +150,15 @@ function SceneContent({
 
 export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [height, setHeight] = useState(460);
-  const [viewMode, setViewMode] = useState<ViewMode>("3d");
+  const [height, setHeight] = useState(520);
+  const [viewMode, setViewMode] = useState<ViewMode>("2d");
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [webglSupported, setWebglSupported] = useState<boolean | null>(null);
 
   useEffect(() => {
     function updateSize() {
-      const width = containerRef.current?.clientWidth ?? 920;
-      setHeight(Math.max(360, Math.min(width * 0.62, 620)));
+      const width = containerRef.current?.clientWidth ?? 1100;
+      setHeight(Math.max(420, Math.min(width * 0.64, 760)));
     }
 
     updateSize();
@@ -609,6 +185,12 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
     };
   }, []);
 
+  useEffect(() => {
+    if (webglSupported === false) {
+      setViewMode("2d");
+    }
+  }, [webglSupported]);
+
   async function toggleFullscreen() {
     if (!containerRef.current) {
       return;
@@ -622,6 +204,8 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
     await containerRef.current.requestFullscreen();
   }
 
+  const show3D = viewMode === "3d" && webglSupported;
+
   return (
     <div
       ref={containerRef}
@@ -629,32 +213,42 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
       style={{ height: isFullscreen ? "100vh" : height }}
     >
       <div className="pointer-events-none absolute inset-0 z-10">
-        {webglSupported ? (
-          <div className="pointer-events-auto absolute right-4 top-4 flex overflow-hidden rounded-full border border-stone-300 bg-white/92 shadow-sm backdrop-blur">
-            <button
-              type="button"
-              onClick={() => setViewMode("3d")}
-              className={`px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] transition ${
-                viewMode === "3d"
-                  ? "bg-stone-950 text-white"
-                  : "text-stone-700 hover:bg-stone-100 hover:text-stone-950"
-              }`}
-            >
-              3D
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewMode("plan")}
-              className={`px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] transition ${
-                viewMode === "plan"
-                  ? "bg-stone-950 text-white"
-                  : "text-stone-700 hover:bg-stone-100 hover:text-stone-950"
-              }`}
-            >
-              2D
-            </button>
-          </div>
-        ) : null}
+        <div className="pointer-events-auto absolute right-4 top-4 flex overflow-hidden rounded-full border border-stone-300 bg-white/92 shadow-sm backdrop-blur">
+          <button
+            type="button"
+            onClick={() => setViewMode("3d")}
+            disabled={!webglSupported}
+            className={`px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] transition ${
+              viewMode === "3d"
+                ? "bg-stone-950 text-white"
+                : "text-stone-700 hover:bg-stone-100 hover:text-stone-950"
+            } ${!webglSupported ? "cursor-not-allowed opacity-45" : ""}`}
+          >
+            3D
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode("2d")}
+            className={`px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] transition ${
+              viewMode === "2d"
+                ? "bg-stone-950 text-white"
+                : "text-stone-700 hover:bg-stone-100 hover:text-stone-950"
+            }`}
+          >
+            2D
+          </button>
+        </div>
+
+        <div className="pointer-events-auto absolute bottom-4 left-4 max-w-md rounded-2xl border border-stone-200 bg-white/92 px-4 py-3 shadow-sm backdrop-blur">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-700">
+            {show3D ? "Controles 3D" : "Controles 2D"}
+          </p>
+          <p className="mt-1 text-xs leading-5 text-stone-600">
+            {show3D
+              ? "Arrastra con el boton izquierdo para girar, con el derecho para mover la camara y usa la rueda para acercar o alejar."
+              : "Usa la rueda del raton para hacer zoom y arrastra para desplazarte por el plano."}
+          </p>
+        </div>
 
         <div className="pointer-events-auto absolute bottom-4 right-4">
           <button
@@ -671,14 +265,17 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
         <div className="flex h-full items-center justify-center text-sm text-stone-500">
           Preparando la sala...
         </div>
-      ) : webglSupported ? (
+      ) : show3D ? (
         <Canvas dpr={[1, 1.75]} shadows gl={{ antialias: true }} eventPrefix="client">
           <Suspense fallback={null}>
-            <SceneContent {...props} viewMode={viewMode} />
+            <SceneContent {...props} />
           </Suspense>
         </Canvas>
       ) : (
-        <PlanFallback {...props} />
+        <DinnerRoomPlan2D
+          {...props}
+          showCompatibilityMessage={webglSupported === false}
+        />
       )}
     </div>
   );

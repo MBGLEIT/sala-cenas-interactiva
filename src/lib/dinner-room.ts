@@ -11,6 +11,10 @@ export type Reserva = {
   id: string;
   asistente_id: string;
   created_at: string;
+  es_celiaco?: boolean;
+  tiene_alergias?: boolean;
+  movilidad_reducida?: boolean;
+  observaciones?: string | null;
 };
 
 export type Silla = {
@@ -100,7 +104,11 @@ export const EVENTO_SALA_SELECT = `
       reservas (
         id,
         asistente_id,
-        created_at
+        created_at,
+        es_celiaco,
+        tiene_alergias,
+        movilidad_reducida,
+        observaciones
       )
     )
   )

@@ -11,6 +11,7 @@ import {
   AdminPanelData,
   AdminReservationRow,
 } from "@/lib/admin-panel";
+import { getNextMesaPosition } from "@/lib/room-layout";
 
 type AdminDashboardProps = {
   events: AdminEventSummary[];
@@ -22,7 +23,10 @@ type JsonResponse = {
   error?: string;
   message?: string;
   eventoId?: string;
+  mesaId?: string;
 };
+
+type MesaCapacityPreset = "8" | "10" | "12" | "custom";
 
 type ChairRow = {
   id: string;
@@ -148,17 +152,6 @@ function FieldInputClass(disabled?: boolean) {
   }`;
 }
 
-function getNextMesaPosition(existingTables: number) {
-  const columns = 3;
-  const col = existingTables % columns;
-  const row = Math.floor(existingTables / columns);
-
-  return {
-    posX: 150 + col * 220,
-    posY: 130 + row * 140,
-  };
-}
-
 export default function AdminDashboard({
   events,
   selectedEventId,
@@ -182,6 +175,8 @@ export default function AdminDashboard({
   const [asistenteEditIdentificador, setAsistenteEditIdentificador] = useState("");
 
   const [mesaNumero, setMesaNumero] = useState("1");
+  const [mesaCapacityPreset, setMesaCapacityPreset] = useState<MesaCapacityPreset>("10");
+  const [mesaCustomChairCount, setMesaCustomChairCount] = useState("10");
   const [mesaEditId, setMesaEditId] = useState("");
   const [mesaEditNumero, setMesaEditNumero] = useState("1");
 
@@ -295,6 +290,16 @@ export default function AdminDashboard({
     setSillaEditMesaId(firstChair?.mesaId ?? "");
     setSillaEditNumero(String(firstChair?.numero ?? 1));
   }, [panelData, allChairs]);
+
+  useEffect(() => {
+    const nextMesaNumero =
+      (panelData?.evento.mesas ?? []).reduce(
+        (maxMesaNumero, mesa) => Math.max(maxMesaNumero, mesa.numero),
+        0,
+      ) + 1;
+
+    setMesaNumero(String(nextMesaNumero));
+  }, [panelData?.evento.mesas]);
 
   useEffect(() => {
     if (!asistenteEditActual) {
@@ -494,11 +499,17 @@ export default function AdminDashboard({
 
     const nextPosition = getNextMesaPosition(panelData?.evento.mesas.length ?? 0);
 
+    const chairCount =
+      mesaCapacityPreset === "custom"
+        ? Number(mesaCustomChairCount)
+        : Number(mesaCapacityPreset);
+
     const created = await runAdminAction(
       "/api/admin/mesas/create",
       {
         eventoId: selectedEventId,
         numero: mesaNumero,
+        chairCount,
         posX: nextPosition.posX,
         posY: nextPosition.posY,
       },
@@ -507,6 +518,9 @@ export default function AdminDashboard({
 
     if (created) {
       setMesaNumero(String(Number(mesaNumero) + 1));
+      if (mesaCapacityPreset === "custom") {
+        setMesaCustomChairCount(mesaCustomChairCount);
+      }
     }
   }
 
@@ -541,17 +555,32 @@ export default function AdminDashboard({
       return;
     }
 
-    await runAdminAction(
-      "/api/admin/mesas/update",
-      {
+    setError("");
+
+    const response = await fetch("/api/admin/mesas/update", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
         mesaId,
         eventoId: selectedEventId,
         numero: mesa.numero,
         posX,
         posY,
-      },
-      "Mesa recolocada",
-    );
+      }),
+    });
+
+    const result = await parseJsonResponse(response);
+
+    if (!response.ok) {
+      setError(result.error ?? "No se pudo recolocar la mesa.");
+      pushToast({
+        tone: "error",
+        title: "Mesa no recolocada",
+        description: result.error ?? "No se pudo guardar la nueva posicion.",
+      });
+    }
   }
 
   async function handleDeleteMesa() {
@@ -862,6 +891,28 @@ export default function AdminDashboard({
                       <p className="mt-1 text-sm leading-6 text-stone-600">
                         {`${reserva.asistenteIdentificador} | Mesa ${reserva.mesaNumero}, Silla ${reserva.sillaNumero}`}
                       </p>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {reserva.esCeliaco ? (
+                          <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-amber-700">
+                            Celiaco
+                          </span>
+                        ) : null}
+                        {reserva.tieneAlergias ? (
+                          <span className="rounded-full bg-rose-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-rose-700">
+                            Alergias
+                          </span>
+                        ) : null}
+                        {reserva.movilidadReducida ? (
+                          <span className="rounded-full bg-sky-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-sky-700">
+                            Movilidad reducida
+                          </span>
+                        ) : null}
+                      </div>
+                      {reserva.observaciones ? (
+                        <p className="mt-3 text-sm leading-6 text-stone-500">
+                          {reserva.observaciones}
+                        </p>
+                      ) : null}
                     </div>
 
                     <button
@@ -1303,6 +1354,40 @@ export default function AdminDashboard({
                         className={FieldInputClass(!selectedEventId)}
                       />
                     </AdminField>
+                    <AdminField
+                      label="Tipo de mesa"
+                      hint="La mesa se creara con sus sillas automaticamente."
+                    >
+                      <select
+                        value={mesaCapacityPreset}
+                        onChange={(event) =>
+                          setMesaCapacityPreset(event.target.value as MesaCapacityPreset)
+                        }
+                        disabled={!selectedEventId}
+                        className={FieldInputClass(!selectedEventId)}
+                      >
+                        <option value="8">Mesa para 8</option>
+                        <option value="10">Mesa para 10</option>
+                        <option value="12">Mesa para 12</option>
+                        <option value="custom">Personalizada</option>
+                      </select>
+                    </AdminField>
+                    {mesaCapacityPreset === "custom" ? (
+                      <AdminField
+                        label="Numero de sillas"
+                        hint="El tamano visual de la mesa se ajustara a esta cantidad."
+                      >
+                        <input
+                          type="number"
+                          min="1"
+                          max="40"
+                          value={mesaCustomChairCount}
+                          onChange={(event) => setMesaCustomChairCount(event.target.value)}
+                          disabled={!selectedEventId}
+                          className={FieldInputClass(!selectedEventId)}
+                        />
+                      </AdminField>
+                    ) : null}
                   </div>
                   <button
                     type="submit"
