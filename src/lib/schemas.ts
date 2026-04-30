@@ -14,6 +14,15 @@ export const eventoIdSchema = z.object({
 export const crearReservaSchema = z.object({
   sillaId: uuidLikeSchema,
   asistenteId: uuidLikeSchema,
+  esCeliaco: z.boolean().optional().default(false),
+  tieneAlergias: z.boolean().optional().default(false),
+  movilidadReducida: z.boolean().optional().default(false),
+  observaciones: z
+    .string()
+    .trim()
+    .max(300, "Las observaciones no pueden superar 300 caracteres")
+    .optional()
+    .default(""),
 });
 
 export const buscarAsistenteSchema = z.object({
@@ -64,12 +73,31 @@ export const adminCreateMesaSchema = z.object({
     .number()
     .int("El numero de mesa debe ser entero")
     .positive("El numero de mesa debe ser mayor que 0"),
+  quantity: z.coerce
+    .number()
+    .int("La cantidad de mesas debe ser entera")
+    .min(1, "Debes crear al menos una mesa")
+    .max(50, "No se pueden crear mas de 50 mesas a la vez")
+    .optional()
+    .default(1),
+  chairCount: z.coerce
+    .number()
+    .int("El numero de sillas debe ser entero")
+    .min(1, "La mesa debe tener al menos 1 silla")
+    .max(40, "La mesa no puede superar 40 sillas"),
   posX: z.coerce.number(),
   posY: z.coerce.number(),
 });
 
-export const adminUpdateMesaSchema = adminCreateMesaSchema.extend({
+export const adminUpdateMesaSchema = z.object({
   mesaId: uuidLikeSchema,
+  eventoId: uuidLikeSchema,
+  numero: z.coerce
+    .number()
+    .int("El numero de mesa debe ser entero")
+    .positive("El numero de mesa debe ser mayor que 0"),
+  posX: z.coerce.number(),
+  posY: z.coerce.number(),
 });
 
 export const adminDeleteMesaSchema = z.object({
@@ -118,6 +146,10 @@ export const adminUpdateAsistenteSchema = z.object({
 
 export const adminDeleteAsistenteSchema = z.object({
   asistenteId: uuidLikeSchema,
+});
+
+export const adminImportPlanSchema = z.object({
+  eventoId: uuidLikeSchema,
 });
 
 export type CrearReservaInput = z.infer<typeof crearReservaSchema>;

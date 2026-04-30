@@ -1,15 +1,18 @@
 "use client";
 
-import { FormEvent, ReactNode, useEffect, useMemo, useState, useTransition } from "react";
+import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
+import AdminTableLayoutEditor from "@/components/admin-table-layout-editor";
 import ToastStack, { ToastItem } from "@/components/toast-stack";
 import {
   AdminEventSummary,
   AdminPanelData,
   AdminReservationRow,
 } from "@/lib/admin-panel";
+import { getNextMesaPosition } from "@/lib/room-layout";
+import { supabase } from "@/lib/supabase";
 
 type AdminDashboardProps = {
   events: AdminEventSummary[];
@@ -21,7 +24,10 @@ type JsonResponse = {
   error?: string;
   message?: string;
   eventoId?: string;
+  mesaId?: string;
 };
+
+type MesaCapacityPreset = "8" | "10" | "12" | "custom";
 
 type ChairRow = {
   id: string;
@@ -157,6 +163,7 @@ export default function AdminDashboard({
   const [statusMessage, setStatusMessage] = useState("");
   const [error, setError] = useState("");
   const [isPending, startTransition] = useTransition();
+  const refreshTimeoutRef = useRef<number | null>(null);
 
   const [eventoNombre, setEventoNombre] = useState("");
   const [eventoFecha, setEventoFecha] = useState("");
@@ -170,12 +177,11 @@ export default function AdminDashboard({
   const [asistenteEditIdentificador, setAsistenteEditIdentificador] = useState("");
 
   const [mesaNumero, setMesaNumero] = useState("1");
-  const [mesaPosX, setMesaPosX] = useState("220");
-  const [mesaPosY, setMesaPosY] = useState("180");
+  const [mesaBatchQuantity, setMesaBatchQuantity] = useState("1");
+  const [mesaCapacityPreset, setMesaCapacityPreset] = useState<MesaCapacityPreset>("10");
+  const [mesaCustomChairCount, setMesaCustomChairCount] = useState("10");
   const [mesaEditId, setMesaEditId] = useState("");
   const [mesaEditNumero, setMesaEditNumero] = useState("1");
-  const [mesaEditPosX, setMesaEditPosX] = useState("220");
-  const [mesaEditPosY, setMesaEditPosY] = useState("180");
 
   const [mesaSeleccionadaId, setMesaSeleccionadaId] = useState("");
   const [sillaNumero, setSillaNumero] = useState("1");
@@ -185,6 +191,7 @@ export default function AdminDashboard({
 
   const [asistenteSeleccionadoId, setAsistenteSeleccionadoId] = useState("");
   const [sillaSeleccionadaId, setSillaSeleccionadaId] = useState("");
+  const [planFile, setPlanFile] = useState<File | null>(null);
 
   const asistentesSinReserva = useMemo(
     () =>
@@ -192,6 +199,18 @@ export default function AdminDashboard({
         (asistente) => !asistente.reservaActual,
       ),
     [panelData],
+  );
+
+  const reservasConAvisosCount = useMemo(
+    () =>
+      (panelData?.reservas ?? []).filter(
+        (reserva) =>
+          reserva.esCeliaco ||
+          reserva.tieneAlergias ||
+          reserva.movilidadReducida ||
+          Boolean(reserva.observaciones?.trim()),
+      ).length,
+    [panelData?.reservas],
   );
 
   const allChairs = useMemo<ChairRow[]>(
@@ -246,6 +265,19 @@ export default function AdminDashboard({
     ]);
   }
 
+  function scheduleRouterRefresh(delay: number = 350) {
+    window.setTimeout(() => {
+      startTransition(() => {
+        router.refresh();
+      });
+    }, delay);
+  }
+
+  function scheduleImportRefreshes() {
+    scheduleRouterRefresh(700);
+    scheduleRouterRefresh(1800);
+  }
+
   useEffect(() => {
     if (toasts.length === 0) {
       return;
@@ -265,6 +297,84 @@ export default function AdminDashboard({
   }, [toasts]);
 
   useEffect(() => {
+    if (!selectedEventId) {
+      return;
+    }
+
+    function scheduleRefresh() {
+      if (refreshTimeoutRef.current) {
+        window.clearTimeout(refreshTimeoutRef.current);
+      }
+
+      refreshTimeoutRef.current = window.setTimeout(() => {
+        startTransition(() => {
+          router.refresh();
+        });
+      }, 350);
+    }
+
+    const channel = supabase
+      .channel(`admin-live-${selectedEventId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "eventos",
+          filter: `id=eq.${selectedEventId}`,
+        },
+        scheduleRefresh,
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "mesas",
+          filter: `evento_id=eq.${selectedEventId}`,
+        },
+        scheduleRefresh,
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "asistentes",
+          filter: `evento_id=eq.${selectedEventId}`,
+        },
+        scheduleRefresh,
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "reservas",
+        },
+        scheduleRefresh,
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "sillas",
+        },
+        scheduleRefresh,
+      )
+      .subscribe();
+
+    return () => {
+      if (refreshTimeoutRef.current) {
+        window.clearTimeout(refreshTimeoutRef.current);
+      }
+
+      void supabase.removeChannel(channel);
+    };
+  }, [router, selectedEventId, startTransition]);
+
+  useEffect(() => {
     setEditarEventoNombre(panelData?.evento.nombre ?? "");
     setEditarEventoFecha(panelData?.evento.fecha ?? "");
 
@@ -276,8 +386,6 @@ export default function AdminDashboard({
     setMesaSeleccionadaId(firstMesa?.id ?? "");
     setMesaEditId(firstMesa?.id ?? "");
     setMesaEditNumero(String(firstMesa?.numero ?? 1));
-    setMesaEditPosX(String(firstMesa?.pos_x ?? 220));
-    setMesaEditPosY(String(firstMesa?.pos_y ?? 180));
 
     setAsistenteSeleccionadoId(firstAsistente?.id ?? "");
     setAsistenteEditId(firstAsistente?.id ?? "");
@@ -289,6 +397,16 @@ export default function AdminDashboard({
     setSillaEditMesaId(firstChair?.mesaId ?? "");
     setSillaEditNumero(String(firstChair?.numero ?? 1));
   }, [panelData, allChairs]);
+
+  useEffect(() => {
+    const nextMesaNumero =
+      (panelData?.evento.mesas ?? []).reduce(
+        (maxMesaNumero, mesa) => Math.max(maxMesaNumero, mesa.numero),
+        0,
+      ) + 1;
+
+    setMesaNumero(String(nextMesaNumero));
+  }, [panelData?.evento.mesas]);
 
   useEffect(() => {
     if (!asistenteEditActual) {
@@ -305,8 +423,6 @@ export default function AdminDashboard({
     }
 
     setMesaEditNumero(String(mesaEditActual.numero));
-    setMesaEditPosX(String(mesaEditActual.pos_x));
-    setMesaEditPosY(String(mesaEditActual.pos_y));
   }, [mesaEditActual]);
 
   useEffect(() => {
@@ -317,6 +433,24 @@ export default function AdminDashboard({
     setSillaEditMesaId(sillaEditActual.mesaId);
     setSillaEditNumero(String(sillaEditActual.numero));
   }, [sillaEditActual]);
+
+  useEffect(() => {
+    if (!mesaSeleccionadaId) {
+      setSillaNumero("1");
+      return;
+    }
+
+    const mesaSeleccionada =
+      (panelData?.evento.mesas ?? []).find((mesa) => mesa.id === mesaSeleccionadaId) ??
+      null;
+    const siguienteNumero =
+      (mesaSeleccionada?.sillas ?? []).reduce(
+        (maxSillaNumero, silla) => Math.max(maxSillaNumero, silla.numero),
+        0,
+      ) + 1;
+
+    setSillaNumero(String(siguienteNumero));
+  }, [mesaSeleccionadaId, panelData?.evento.mesas]);
 
   async function runAdminAction(
     endpoint: string,
@@ -357,9 +491,7 @@ export default function AdminDashboard({
     });
 
     onSuccess?.(result);
-    startTransition(() => {
-      router.refresh();
-    });
+    scheduleRouterRefresh();
 
     return true;
   }
@@ -488,20 +620,75 @@ export default function AdminDashboard({
       return;
     }
 
+    const nextPosition = getNextMesaPosition(panelData?.evento.mesas.length ?? 0);
+
+    const chairCount =
+      mesaCapacityPreset === "custom"
+        ? Number(mesaCustomChairCount)
+        : Number(mesaCapacityPreset);
+
     const created = await runAdminAction(
       "/api/admin/mesas/create",
       {
         eventoId: selectedEventId,
         numero: mesaNumero,
-        posX: mesaPosX,
-        posY: mesaPosY,
+        quantity: mesaBatchQuantity,
+        chairCount,
+        posX: nextPosition.posX,
+        posY: nextPosition.posY,
       },
       "Mesa creada",
     );
 
     if (created) {
-      setMesaNumero(String(Number(mesaNumero) + 1));
+      setMesaNumero(String(Number(mesaNumero) + Number(mesaBatchQuantity)));
+      if (mesaCapacityPreset === "custom") {
+        setMesaCustomChairCount(mesaCustomChairCount);
+      }
     }
+  }
+
+  async function handleImportPlan(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!selectedEventId || !planFile) {
+      return;
+    }
+
+    setError("");
+    setStatusMessage("");
+
+    const formData = new FormData();
+    formData.append("eventoId", selectedEventId);
+    formData.append("file", planFile);
+
+    const response = await fetch("/api/admin/mesas/import-plan", {
+      method: "POST",
+      body: formData,
+    });
+
+    const result = await parseJsonResponse(response);
+
+    if (!response.ok) {
+      const message = result.error ?? "No se pudo cargar el plano.";
+      setError(message);
+      pushToast({
+        tone: "error",
+        title: "Plano no cargado",
+        description: message,
+      });
+      return;
+    }
+
+    const message = result.message ?? "Plano cargado correctamente.";
+    setStatusMessage(message);
+    setPlanFile(null);
+    pushToast({
+      tone: "success",
+      title: "Plano cargado",
+      description: message,
+    });
+    scheduleImportRefreshes();
   }
 
   async function handleUpdateMesa(event: FormEvent<HTMLFormElement>) {
@@ -517,11 +704,50 @@ export default function AdminDashboard({
         mesaId: mesaEditId,
         eventoId: selectedEventId,
         numero: mesaEditNumero,
-        posX: mesaEditPosX,
-        posY: mesaEditPosY,
+        posX: mesaEditActual?.pos_x ?? 220,
+        posY: mesaEditActual?.pos_y ?? 180,
       },
       "Mesa actualizada",
     );
+  }
+
+  async function handleMoveMesa(mesaId: string, posX: number, posY: number) {
+    if (!selectedEventId) {
+      return;
+    }
+
+    const mesa = (panelData?.evento.mesas ?? []).find((item) => item.id === mesaId);
+
+    if (!mesa) {
+      return;
+    }
+
+    setError("");
+
+    const response = await fetch("/api/admin/mesas/update", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        mesaId,
+        eventoId: selectedEventId,
+        numero: mesa.numero,
+        posX,
+        posY,
+      }),
+    });
+
+    const result = await parseJsonResponse(response);
+
+    if (!response.ok) {
+      setError(result.error ?? "No se pudo recolocar la mesa.");
+      pushToast({
+        tone: "error",
+        title: "Mesa no recolocada",
+        description: result.error ?? "No se pudo guardar la nueva posicion.",
+      });
+    }
   }
 
   async function handleDeleteMesa() {
@@ -814,6 +1040,24 @@ export default function AdminDashboard({
             title="Ver y deshacer reservas"
             description="Aqui puedes revisar el reparto actual y quitar reservas si necesitas rehacerlo."
           >
+            <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-stone-200 bg-white px-4 py-4">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-[0.18em] text-stone-500">
+                  Reservas especiales
+                </p>
+                <p className="mt-1 text-sm leading-6 text-stone-600">
+                  Este numero indica cuantas personas han marcado alergias, celiaquia, movilidad reducida o han dejado observaciones.
+                </p>
+              </div>
+              <div className="inline-flex items-center gap-3 rounded-full border border-rose-200 bg-rose-50 px-4 py-2">
+                <span className="text-xs font-semibold uppercase tracking-[0.18em] text-rose-700">
+                  Especiales
+                </span>
+                <span className="text-2xl font-semibold text-rose-700">
+                  {reservasConAvisosCount}
+                </span>
+              </div>
+            </div>
             <div className="space-y-3">
               {(panelData?.reservas ?? []).length === 0 ? (
                 <div className="rounded-3xl border border-dashed border-stone-300 bg-stone-50 px-5 py-5 text-sm leading-7 text-stone-500">
@@ -832,6 +1076,28 @@ export default function AdminDashboard({
                       <p className="mt-1 text-sm leading-6 text-stone-600">
                         {`${reserva.asistenteIdentificador} | Mesa ${reserva.mesaNumero}, Silla ${reserva.sillaNumero}`}
                       </p>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {reserva.esCeliaco ? (
+                          <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-amber-700">
+                            Celiaco
+                          </span>
+                        ) : null}
+                        {reserva.tieneAlergias ? (
+                          <span className="rounded-full bg-rose-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-rose-700">
+                            Alergias
+                          </span>
+                        ) : null}
+                        {reserva.movilidadReducida ? (
+                          <span className="rounded-full bg-sky-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-sky-700">
+                            Movilidad reducida
+                          </span>
+                        ) : null}
+                      </div>
+                      {reserva.observaciones ? (
+                        <p className="mt-3 text-sm leading-6 text-stone-500">
+                          {reserva.observaciones}
+                        </p>
+                      ) : null}
                     </div>
 
                     <button
@@ -1056,8 +1322,16 @@ export default function AdminDashboard({
             <AdminCard
               eyebrow="Plano"
               title="Resumen de estructura"
-              description="Un vistazo rapido a las mesas del evento, sus posiciones y cuantas sillas tiene cada una."
+              description="Un vistazo rapido a las mesas del evento. Puedes arrastrarlas para recolocarlas en la sala."
             >
+              <AdminTableLayoutEditor
+                mesas={panelData?.evento.mesas ?? []}
+                selectedMesaId={mesaEditId}
+                onSelectMesa={setMesaEditId}
+                onMoveMesa={handleMoveMesa}
+                disabled={isPending}
+              />
+
               <div className="grid gap-3 sm:grid-cols-2">
                 {(panelData?.evento.mesas ?? []).length === 0 ? (
                   <div className="rounded-3xl border border-dashed border-stone-300 bg-stone-50 px-5 py-5 text-sm leading-7 text-stone-500">
@@ -1071,9 +1345,6 @@ export default function AdminDashboard({
                     >
                       <p className="text-base font-semibold text-stone-900">
                         Mesa {mesa.numero}
-                      </p>
-                      <p className="mt-2 text-sm leading-6 text-stone-600">
-                        Posicion: X {mesa.pos_x}, Y {mesa.pos_y}
                       </p>
                       <p className="mt-1 text-sm leading-6 text-stone-600">
                         Sillas: {mesa.sillas.length}
@@ -1198,7 +1469,7 @@ export default function AdminDashboard({
             <AdminCard
               eyebrow="Mesas"
               title="Crear, editar y eliminar mesas"
-              description="Aqui defines las mesas del evento y las coordenadas con las que apareceran despues dentro del plano visual."
+              description="Crea mesas nuevas y cambia su numero. La posicion ahora se gestiona arrastrandolas en el editor visual."
             >
               <div className="grid gap-6 xl:grid-cols-[1fr_1fr]">
                 <form className="grid gap-4" onSubmit={handleUpdateMesa}>
@@ -1230,25 +1501,10 @@ export default function AdminDashboard({
                         className={FieldInputClass(!mesaEditId)}
                       />
                     </AdminField>
-                    <AdminField label="Nueva posicion X">
-                      <input
-                        type="number"
-                        value={mesaEditPosX}
-                        onChange={(event) => setMesaEditPosX(event.target.value)}
-                        disabled={!mesaEditId}
-                        className={FieldInputClass(!mesaEditId)}
-                      />
-                    </AdminField>
-                    <AdminField label="Nueva posicion Y">
-                      <input
-                        type="number"
-                        value={mesaEditPosY}
-                        onChange={(event) => setMesaEditPosY(event.target.value)}
-                        disabled={!mesaEditId}
-                        className={FieldInputClass(!mesaEditId)}
-                      />
-                    </AdminField>
                   </div>
+                  <p className="text-sm leading-6 text-stone-600">
+                    La posicion de esta mesa se cambia arrastrandola dentro del editor visual de arriba.
+                  </p>
                   <div className="flex flex-wrap gap-3">
                     <button
                       type="submit"
@@ -1270,10 +1526,10 @@ export default function AdminDashboard({
 
                 <form className="grid gap-4" onSubmit={handleCreateMesa}>
                   <DividerLabel>Crear mesa</DividerLabel>
-                  <div className="grid gap-4 lg:grid-cols-3">
+                  <div className="grid gap-4">
                     <AdminField
                       label="Numero de mesa"
-                      hint="Es el numero visible para organizar la sala."
+                      hint="La nueva mesa aparecera colocada automaticamente y luego podras moverla arrastrando."
                     >
                       <input
                         type="number"
@@ -1284,39 +1540,103 @@ export default function AdminDashboard({
                       />
                     </AdminField>
                     <AdminField
-                      label="Posicion X"
-                      hint="Movimiento horizontal dentro del plano."
+                      label="Cuantas mesas crear"
+                      hint="Puedes generar varias mesas seguidas de una sola vez."
                     >
                       <input
                         type="number"
-                        value={mesaPosX}
-                        onChange={(event) => setMesaPosX(event.target.value)}
+                        min="1"
+                        max="50"
+                        value={mesaBatchQuantity}
+                        onChange={(event) => setMesaBatchQuantity(event.target.value)}
                         disabled={!selectedEventId}
                         className={FieldInputClass(!selectedEventId)}
                       />
                     </AdminField>
                     <AdminField
-                      label="Posicion Y"
-                      hint="Movimiento vertical dentro del plano."
+                      label="Tipo de mesa"
+                      hint="La mesa se creara con sus sillas automaticamente."
                     >
-                      <input
-                        type="number"
-                        value={mesaPosY}
-                        onChange={(event) => setMesaPosY(event.target.value)}
+                      <select
+                        value={mesaCapacityPreset}
+                        onChange={(event) =>
+                          setMesaCapacityPreset(event.target.value as MesaCapacityPreset)
+                        }
                         disabled={!selectedEventId}
                         className={FieldInputClass(!selectedEventId)}
-                      />
+                      >
+                        <option value="8">Mesa para 8</option>
+                        <option value="10">Mesa para 10</option>
+                        <option value="12">Mesa para 12</option>
+                        <option value="custom">Personalizada</option>
+                      </select>
                     </AdminField>
+                    {mesaCapacityPreset === "custom" ? (
+                      <AdminField
+                        label="Numero de sillas"
+                        hint="El tamano visual de la mesa se ajustara a esta cantidad."
+                      >
+                        <input
+                          type="number"
+                          min="1"
+                          max="40"
+                          value={mesaCustomChairCount}
+                          onChange={(event) => setMesaCustomChairCount(event.target.value)}
+                          disabled={!selectedEventId}
+                          className={FieldInputClass(!selectedEventId)}
+                        />
+                      </AdminField>
+                    ) : null}
                   </div>
                   <button
                     type="submit"
                     disabled={!selectedEventId || isPending}
                     className="inline-flex items-center justify-center rounded-full bg-stone-950 px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-stone-400"
                   >
-                    Crear mesa
+                    {Number(mesaBatchQuantity) > 1 ? "Crear mesas" : "Crear mesa"}
                   </button>
                 </form>
               </div>
+            </AdminCard>
+          </div>
+
+          <div className="mt-6">
+            <AdminCard
+              eyebrow="Plano"
+              title="Cargar plano de sala"
+              description="Sube un PDF, una captura, un TXT, un CSV, un Excel, un DOCX o un JSON para generar automaticamente la estructura del evento."
+            >
+              <form className="grid gap-4" onSubmit={handleImportPlan}>
+                <AdminField
+                  label="Archivo del plano"
+                  hint="Prioriza el formato M:x y debajo S:x para cada mesa. Tambien puede leer capturas e imagenes con OCR."
+                >
+                  <input
+                    type="file"
+                    accept=".pdf,.txt,.json,.csv,.xlsx,.xls,.docx,image/*"
+                    disabled={!selectedEventId || isPending}
+                    onChange={(event) => {
+                      setPlanFile(event.target.files?.[0] ?? null);
+                    }}
+                    className="block w-full rounded-2xl border border-stone-300 bg-stone-50 px-4 py-3 text-sm text-stone-700 file:mr-4 file:rounded-full file:border-0 file:bg-stone-950 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white"
+                  />
+                </AdminField>
+                {planFile ? (
+                  <p className="text-sm leading-6 text-stone-600">
+                    Archivo preparado: <span className="font-semibold text-stone-900">{planFile.name}</span>
+                  </p>
+                ) : null}
+                <div className="rounded-3xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm leading-6 text-amber-900">
+                  Sugerencia: para minimizar errores usa bloques tipo M:4 y justo debajo S:10. Si subes un plano visual, el sistema intentara replicar tambien el orden y la colocacion aproximada de las mesas.
+                </div>
+                <button
+                  type="submit"
+                  disabled={!selectedEventId || !planFile || isPending}
+                  className="inline-flex items-center justify-center rounded-full bg-stone-950 px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-stone-400"
+                >
+                  Cargar plano
+                </button>
+              </form>
             </AdminCard>
           </div>
         </AdminSection>

@@ -36,6 +36,10 @@ export type AdminReservationRow = {
   mesaNumero: number;
   sillaNumero: number;
   createdAt: string;
+  esCeliaco: boolean;
+  tieneAlergias: boolean;
+  movilidadReducida: boolean;
+  observaciones: string | null;
 };
 
 export type AdminChairOption = {
@@ -151,6 +155,10 @@ export async function fetchAdminPanelData(eventoId: string): Promise<AdminPanelD
         mesaNumero: mesa.numero,
         sillaNumero: silla.numero,
         createdAt: reserva.created_at,
+        esCeliaco: Boolean(reserva.es_celiaco),
+        tieneAlergias: Boolean(reserva.tiene_alergias),
+        movilidadReducida: Boolean(reserva.movilidad_reducida),
+        observaciones: reserva.observaciones ?? null,
       });
     }
   }
