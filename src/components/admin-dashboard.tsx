@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, ReactNode, useEffect, useMemo, useState, useTransition } from "react";
+import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
@@ -12,6 +12,7 @@ import {
   AdminReservationRow,
 } from "@/lib/admin-panel";
 import { getNextMesaPosition } from "@/lib/room-layout";
+import { supabase } from "@/lib/supabase";
 
 type AdminDashboardProps = {
   events: AdminEventSummary[];
@@ -162,6 +163,7 @@ export default function AdminDashboard({
   const [statusMessage, setStatusMessage] = useState("");
   const [error, setError] = useState("");
   const [isPending, startTransition] = useTransition();
+  const refreshTimeoutRef = useRef<number | null>(null);
 
   const [eventoNombre, setEventoNombre] = useState("");
   const [eventoFecha, setEventoFecha] = useState("");
@@ -175,6 +177,7 @@ export default function AdminDashboard({
   const [asistenteEditIdentificador, setAsistenteEditIdentificador] = useState("");
 
   const [mesaNumero, setMesaNumero] = useState("1");
+  const [mesaBatchQuantity, setMesaBatchQuantity] = useState("1");
   const [mesaCapacityPreset, setMesaCapacityPreset] = useState<MesaCapacityPreset>("10");
   const [mesaCustomChairCount, setMesaCustomChairCount] = useState("10");
   const [mesaEditId, setMesaEditId] = useState("");
@@ -188,6 +191,7 @@ export default function AdminDashboard({
 
   const [asistenteSeleccionadoId, setAsistenteSeleccionadoId] = useState("");
   const [sillaSeleccionadaId, setSillaSeleccionadaId] = useState("");
+  const [planFile, setPlanFile] = useState<File | null>(null);
 
   const asistentesSinReserva = useMemo(
     () =>
@@ -195,6 +199,18 @@ export default function AdminDashboard({
         (asistente) => !asistente.reservaActual,
       ),
     [panelData],
+  );
+
+  const reservasConAvisosCount = useMemo(
+    () =>
+      (panelData?.reservas ?? []).filter(
+        (reserva) =>
+          reserva.esCeliaco ||
+          reserva.tieneAlergias ||
+          reserva.movilidadReducida ||
+          Boolean(reserva.observaciones?.trim()),
+      ).length,
+    [panelData?.reservas],
   );
 
   const allChairs = useMemo<ChairRow[]>(
@@ -249,6 +265,19 @@ export default function AdminDashboard({
     ]);
   }
 
+  function scheduleRouterRefresh(delay: number = 350) {
+    window.setTimeout(() => {
+      startTransition(() => {
+        router.refresh();
+      });
+    }, delay);
+  }
+
+  function scheduleImportRefreshes() {
+    scheduleRouterRefresh(700);
+    scheduleRouterRefresh(1800);
+  }
+
   useEffect(() => {
     if (toasts.length === 0) {
       return;
@@ -266,6 +295,84 @@ export default function AdminDashboard({
       });
     };
   }, [toasts]);
+
+  useEffect(() => {
+    if (!selectedEventId) {
+      return;
+    }
+
+    function scheduleRefresh() {
+      if (refreshTimeoutRef.current) {
+        window.clearTimeout(refreshTimeoutRef.current);
+      }
+
+      refreshTimeoutRef.current = window.setTimeout(() => {
+        startTransition(() => {
+          router.refresh();
+        });
+      }, 350);
+    }
+
+    const channel = supabase
+      .channel(`admin-live-${selectedEventId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "eventos",
+          filter: `id=eq.${selectedEventId}`,
+        },
+        scheduleRefresh,
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "mesas",
+          filter: `evento_id=eq.${selectedEventId}`,
+        },
+        scheduleRefresh,
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "asistentes",
+          filter: `evento_id=eq.${selectedEventId}`,
+        },
+        scheduleRefresh,
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "reservas",
+        },
+        scheduleRefresh,
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "sillas",
+        },
+        scheduleRefresh,
+      )
+      .subscribe();
+
+    return () => {
+      if (refreshTimeoutRef.current) {
+        window.clearTimeout(refreshTimeoutRef.current);
+      }
+
+      void supabase.removeChannel(channel);
+    };
+  }, [router, selectedEventId, startTransition]);
 
   useEffect(() => {
     setEditarEventoNombre(panelData?.evento.nombre ?? "");
@@ -327,6 +434,24 @@ export default function AdminDashboard({
     setSillaEditNumero(String(sillaEditActual.numero));
   }, [sillaEditActual]);
 
+  useEffect(() => {
+    if (!mesaSeleccionadaId) {
+      setSillaNumero("1");
+      return;
+    }
+
+    const mesaSeleccionada =
+      (panelData?.evento.mesas ?? []).find((mesa) => mesa.id === mesaSeleccionadaId) ??
+      null;
+    const siguienteNumero =
+      (mesaSeleccionada?.sillas ?? []).reduce(
+        (maxSillaNumero, silla) => Math.max(maxSillaNumero, silla.numero),
+        0,
+      ) + 1;
+
+    setSillaNumero(String(siguienteNumero));
+  }, [mesaSeleccionadaId, panelData?.evento.mesas]);
+
   async function runAdminAction(
     endpoint: string,
     payload: Record<string, string | number>,
@@ -366,9 +491,7 @@ export default function AdminDashboard({
     });
 
     onSuccess?.(result);
-    startTransition(() => {
-      router.refresh();
-    });
+    scheduleRouterRefresh();
 
     return true;
   }
@@ -509,6 +632,7 @@ export default function AdminDashboard({
       {
         eventoId: selectedEventId,
         numero: mesaNumero,
+        quantity: mesaBatchQuantity,
         chairCount,
         posX: nextPosition.posX,
         posY: nextPosition.posY,
@@ -517,11 +641,54 @@ export default function AdminDashboard({
     );
 
     if (created) {
-      setMesaNumero(String(Number(mesaNumero) + 1));
+      setMesaNumero(String(Number(mesaNumero) + Number(mesaBatchQuantity)));
       if (mesaCapacityPreset === "custom") {
         setMesaCustomChairCount(mesaCustomChairCount);
       }
     }
+  }
+
+  async function handleImportPlan(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!selectedEventId || !planFile) {
+      return;
+    }
+
+    setError("");
+    setStatusMessage("");
+
+    const formData = new FormData();
+    formData.append("eventoId", selectedEventId);
+    formData.append("file", planFile);
+
+    const response = await fetch("/api/admin/mesas/import-plan", {
+      method: "POST",
+      body: formData,
+    });
+
+    const result = await parseJsonResponse(response);
+
+    if (!response.ok) {
+      const message = result.error ?? "No se pudo cargar el plano.";
+      setError(message);
+      pushToast({
+        tone: "error",
+        title: "Plano no cargado",
+        description: message,
+      });
+      return;
+    }
+
+    const message = result.message ?? "Plano cargado correctamente.";
+    setStatusMessage(message);
+    setPlanFile(null);
+    pushToast({
+      tone: "success",
+      title: "Plano cargado",
+      description: message,
+    });
+    scheduleImportRefreshes();
   }
 
   async function handleUpdateMesa(event: FormEvent<HTMLFormElement>) {
@@ -873,6 +1040,24 @@ export default function AdminDashboard({
             title="Ver y deshacer reservas"
             description="Aqui puedes revisar el reparto actual y quitar reservas si necesitas rehacerlo."
           >
+            <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-stone-200 bg-white px-4 py-4">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-[0.18em] text-stone-500">
+                  Reservas especiales
+                </p>
+                <p className="mt-1 text-sm leading-6 text-stone-600">
+                  Este numero indica cuantas personas han marcado alergias, celiaquia, movilidad reducida o han dejado observaciones.
+                </p>
+              </div>
+              <div className="inline-flex items-center gap-3 rounded-full border border-rose-200 bg-rose-50 px-4 py-2">
+                <span className="text-xs font-semibold uppercase tracking-[0.18em] text-rose-700">
+                  Especiales
+                </span>
+                <span className="text-2xl font-semibold text-rose-700">
+                  {reservasConAvisosCount}
+                </span>
+              </div>
+            </div>
             <div className="space-y-3">
               {(panelData?.reservas ?? []).length === 0 ? (
                 <div className="rounded-3xl border border-dashed border-stone-300 bg-stone-50 px-5 py-5 text-sm leading-7 text-stone-500">
@@ -1355,6 +1540,20 @@ export default function AdminDashboard({
                       />
                     </AdminField>
                     <AdminField
+                      label="Cuantas mesas crear"
+                      hint="Puedes generar varias mesas seguidas de una sola vez."
+                    >
+                      <input
+                        type="number"
+                        min="1"
+                        max="50"
+                        value={mesaBatchQuantity}
+                        onChange={(event) => setMesaBatchQuantity(event.target.value)}
+                        disabled={!selectedEventId}
+                        className={FieldInputClass(!selectedEventId)}
+                      />
+                    </AdminField>
+                    <AdminField
                       label="Tipo de mesa"
                       hint="La mesa se creara con sus sillas automaticamente."
                     >
@@ -1394,10 +1593,50 @@ export default function AdminDashboard({
                     disabled={!selectedEventId || isPending}
                     className="inline-flex items-center justify-center rounded-full bg-stone-950 px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-stone-400"
                   >
-                    Crear mesa
+                    {Number(mesaBatchQuantity) > 1 ? "Crear mesas" : "Crear mesa"}
                   </button>
                 </form>
               </div>
+            </AdminCard>
+          </div>
+
+          <div className="mt-6">
+            <AdminCard
+              eyebrow="Plano"
+              title="Cargar plano de sala"
+              description="Sube un PDF, una captura, un TXT, un CSV, un Excel, un DOCX o un JSON para generar automaticamente la estructura del evento."
+            >
+              <form className="grid gap-4" onSubmit={handleImportPlan}>
+                <AdminField
+                  label="Archivo del plano"
+                  hint="Prioriza el formato M:x y debajo S:x para cada mesa. Tambien puede leer capturas e imagenes con OCR."
+                >
+                  <input
+                    type="file"
+                    accept=".pdf,.txt,.json,.csv,.xlsx,.xls,.docx,image/*"
+                    disabled={!selectedEventId || isPending}
+                    onChange={(event) => {
+                      setPlanFile(event.target.files?.[0] ?? null);
+                    }}
+                    className="block w-full rounded-2xl border border-stone-300 bg-stone-50 px-4 py-3 text-sm text-stone-700 file:mr-4 file:rounded-full file:border-0 file:bg-stone-950 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white"
+                  />
+                </AdminField>
+                {planFile ? (
+                  <p className="text-sm leading-6 text-stone-600">
+                    Archivo preparado: <span className="font-semibold text-stone-900">{planFile.name}</span>
+                  </p>
+                ) : null}
+                <div className="rounded-3xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm leading-6 text-amber-900">
+                  Sugerencia: para minimizar errores usa bloques tipo M:4 y justo debajo S:10. Si subes un plano visual, el sistema intentara replicar tambien el orden y la colocacion aproximada de las mesas.
+                </div>
+                <button
+                  type="submit"
+                  disabled={!selectedEventId || !planFile || isPending}
+                  className="inline-flex items-center justify-center rounded-full bg-stone-950 px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-stone-400"
+                >
+                  Cargar plano
+                </button>
+              </form>
             </AdminCard>
           </div>
         </AdminSection>

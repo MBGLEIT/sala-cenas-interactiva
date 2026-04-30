@@ -27,6 +27,10 @@ type DinnerRoomSceneProps = {
 
 type ViewMode = "3d" | "2d";
 
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
 function browserSupportsWebGL() {
   if (typeof window === "undefined") {
     return false;
@@ -47,38 +51,119 @@ function browserSupportsWebGL() {
 
 function EventLabel({
   evento,
-  zPosition,
+  centerX,
+  centerZ,
 }: {
   evento: EventoSala;
-  zPosition: number;
+  centerX: number;
+  centerZ: number;
 }) {
   const roomWorldWidth = ROOM_LAYOUT_WIDTH * ROOM_WORLD_SCALE;
 
   return (
     <Text
-      position={[0, 3.2, zPosition]}
-      fontSize={0.5}
-      color="#3f3f46"
+      position={[centerX, -0.772, centerZ]}
+      rotation={[-Math.PI / 2, 0, 0]}
+      fontSize={0.82}
+      color="#efe3cb"
       anchorX="center"
       anchorY="middle"
       maxWidth={roomWorldWidth * 0.7}
+      outlineWidth={0.024}
+      outlineColor="#40261f"
     >
-      {`${evento.nombre} - ${evento.fecha}`}
+      {evento.nombre}
     </Text>
   );
 }
 
 function SceneContent(props: DinnerRoomSceneProps) {
+  const controlsRef = useRef<any>(null);
+  const cameraRef = useRef<any>(null);
   const mesas = useMemo(
     () => [...props.evento.mesas].sort((a, b) => a.numero - b.numero),
     [props.evento.mesas],
   );
+  const structureSignature = useMemo(
+    () =>
+      mesas
+        .map((mesa) => `${mesa.numero}:${mesa.sillas.length}`)
+        .sort()
+        .join("|"),
+    [mesas],
+  );
   const bounds = useMemo(() => getEventBounds(mesas), [mesas]);
   const roomWorldWidth = ROOM_LAYOUT_WIDTH * ROOM_WORLD_SCALE;
   const roomWorldDepth = ROOM_LAYOUT_HEIGHT * ROOM_WORLD_SCALE;
-  const targetPoint = roomPointToWorld(bounds.centerX, bounds.centerY);
+  const nextTargetPoint = roomPointToWorld(bounds.centerX, bounds.centerY);
   const spread = Math.max(bounds.width * ROOM_WORLD_SCALE, bounds.height * ROOM_WORLD_SCALE);
-  const cameraDistance = Math.min(Math.max(15, spread * 2.4), 28);
+  const hallWidth = Math.max(bounds.width * ROOM_WORLD_SCALE + 8, roomWorldWidth * 0.46);
+  const hallDepth = Math.max(bounds.height * ROOM_WORLD_SCALE + 8, roomWorldDepth * 0.42);
+  const [sceneAnchor, setSceneAnchor] = useState(() => ({
+    targetX: nextTargetPoint.x,
+    targetZ: nextTargetPoint.z,
+    hallWidth,
+    hallDepth,
+    cameraDistance: Math.min(Math.max(15, spread * 2.4), 28),
+  }));
+  const previousEventIdRef = useRef(props.evento.id);
+  const previousStructureSignatureRef = useRef(structureSignature);
+
+  useEffect(() => {
+    const eventChanged = previousEventIdRef.current !== props.evento.id;
+    const structureChanged =
+      previousStructureSignatureRef.current !== structureSignature;
+
+    if (eventChanged || structureChanged) {
+      setSceneAnchor({
+        targetX: nextTargetPoint.x,
+        targetZ: nextTargetPoint.z,
+        hallWidth,
+        hallDepth,
+        cameraDistance: Math.min(Math.max(15, spread * 2.4), 28),
+      });
+      previousEventIdRef.current = props.evento.id;
+      previousStructureSignatureRef.current = structureSignature;
+    }
+  }, [hallDepth, hallWidth, nextTargetPoint.x, nextTargetPoint.z, props.evento.id, spread, structureSignature]);
+
+  const targetPoint = { x: sceneAnchor.targetX, z: sceneAnchor.targetZ };
+  const cameraDistance = sceneAnchor.cameraDistance;
+  const boundsWorldWidth = Math.max(sceneAnchor.hallWidth - 8, 4.8);
+  const boundsWorldDepth = Math.max(sceneAnchor.hallDepth - 8, 4.2);
+  const panLimitX = boundsWorldWidth / 2 + Math.min(2.2, Math.max(1.1, boundsWorldWidth * 0.09));
+  const panLimitZ = boundsWorldDepth / 2 + Math.min(2, Math.max(1, boundsWorldDepth * 0.09));
+
+  function clampControlsToHall() {
+    const controls = controlsRef.current;
+    const camera = cameraRef.current;
+
+    if (!controls || !camera) {
+      return;
+    }
+
+    const nextTargetX = clamp(
+      controls.target.x,
+      targetPoint.x - panLimitX,
+      targetPoint.x + panLimitX,
+    );
+    const nextTargetZ = clamp(
+      controls.target.z,
+      targetPoint.z - panLimitZ,
+      targetPoint.z + panLimitZ,
+    );
+
+    const deltaX = nextTargetX - controls.target.x;
+    const deltaZ = nextTargetZ - controls.target.z;
+
+    if (deltaX !== 0 || deltaZ !== 0) {
+      controls.target.x = nextTargetX;
+      controls.target.z = nextTargetZ;
+      camera.position.x += deltaX;
+      camera.position.z += deltaZ;
+      controls.update();
+    }
+  }
 
   return (
     <>
@@ -94,11 +179,13 @@ function SceneContent(props: DinnerRoomSceneProps) {
       />
 
       <PerspectiveCamera
+        ref={cameraRef}
         makeDefault
         position={[targetPoint.x, 13.5, targetPoint.z + cameraDistance]}
         fov={42}
       />
       <OrbitControls
+        ref={controlsRef}
         enablePan
         enableRotate
         enableZoom
@@ -114,10 +201,20 @@ function SceneContent(props: DinnerRoomSceneProps) {
           MIDDLE: MOUSE.DOLLY,
           RIGHT: MOUSE.PAN,
         }}
+        onChange={clampControlsToHall}
       />
 
-      <DinnerRoomHall3D width={roomWorldWidth + 4} depth={roomWorldDepth + 4} />
-      <EventLabel evento={props.evento} zPosition={-(roomWorldDepth / 2) + 1.8} />
+      <DinnerRoomHall3D
+        width={sceneAnchor.hallWidth}
+        depth={sceneAnchor.hallDepth}
+        centerX={targetPoint.x}
+        centerZ={targetPoint.z}
+      />
+      <EventLabel
+        evento={props.evento}
+        centerX={targetPoint.x}
+        centerZ={targetPoint.z}
+      />
 
       {mesas.map((mesa) => {
         const worldPosition = roomPointToWorld(mesa.pos_x, mesa.pos_y);
@@ -138,8 +235,8 @@ function SceneContent(props: DinnerRoomSceneProps) {
       })}
 
       <ContactShadows
-        position={[0, -0.71, 0]}
-        scale={56}
+        position={[targetPoint.x, -0.71, targetPoint.z]}
+        scale={Math.max(sceneAnchor.hallWidth, sceneAnchor.hallDepth) * 1.25}
         blur={3.4}
         opacity={0.28}
         far={28}

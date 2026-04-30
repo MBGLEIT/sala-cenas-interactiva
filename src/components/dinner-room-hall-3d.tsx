@@ -5,6 +5,8 @@ import { CanvasTexture, RepeatWrapping, SRGBColorSpace } from "three";
 type DinnerRoomHall3DProps = {
   width: number;
   depth: number;
+  centerX: number;
+  centerZ: number;
 };
 
 let floorTextureCache: CanvasTexture | null = null;
@@ -109,13 +111,15 @@ function getCarpetTexture() {
 export default function DinnerRoomHall3D({
   width,
   depth,
+  centerX,
+  centerZ,
 }: DinnerRoomHall3DProps) {
   const carpetWidth = width * 0.78;
   const carpetDepth = depth * 0.72;
 
   return (
     <>
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.8, 0]} receiveShadow>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[centerX, -0.8, centerZ]} receiveShadow>
         <planeGeometry args={[width, depth]} />
         <meshStandardMaterial
           color="#c9b18f"
@@ -124,24 +128,13 @@ export default function DinnerRoomHall3D({
         />
       </mesh>
 
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.785, 0]} receiveShadow>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[centerX, -0.785, centerZ]} receiveShadow>
         <planeGeometry args={[carpetWidth, carpetDepth]} />
         <meshStandardMaterial
           color="#612734"
           map={getCarpetTexture() ?? undefined}
           roughness={0.94}
         />
-      </mesh>
-
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.778, 0]} receiveShadow>
-        <ringGeometry
-          args={[
-            Math.max(carpetWidth, carpetDepth) * 0.38,
-            Math.max(carpetWidth, carpetDepth) * 0.42,
-            64,
-          ]}
-        />
-        <meshStandardMaterial color="#d4c2a4" roughness={0.86} />
       </mesh>
     </>
   );

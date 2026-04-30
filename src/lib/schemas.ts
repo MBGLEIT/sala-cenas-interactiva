@@ -73,6 +73,13 @@ export const adminCreateMesaSchema = z.object({
     .number()
     .int("El numero de mesa debe ser entero")
     .positive("El numero de mesa debe ser mayor que 0"),
+  quantity: z.coerce
+    .number()
+    .int("La cantidad de mesas debe ser entera")
+    .min(1, "Debes crear al menos una mesa")
+    .max(50, "No se pueden crear mas de 50 mesas a la vez")
+    .optional()
+    .default(1),
   chairCount: z.coerce
     .number()
     .int("El numero de sillas debe ser entero")
@@ -139,6 +146,10 @@ export const adminUpdateAsistenteSchema = z.object({
 
 export const adminDeleteAsistenteSchema = z.object({
   asistenteId: uuidLikeSchema,
+});
+
+export const adminImportPlanSchema = z.object({
+  eventoId: uuidLikeSchema,
 });
 
 export type CrearReservaInput = z.infer<typeof crearReservaSchema>;

@@ -4,9 +4,9 @@ import { PointerEvent, useEffect, useRef, useState } from "react";
 
 import { Mesa } from "@/lib/dinner-room";
 import {
-  ROOM_LAYOUT_HEIGHT,
-  ROOM_LAYOUT_WIDTH,
   getEventBounds,
+  PlanFrame,
+  getPlanFrame,
   getTableDimensions,
   getRectangleChairSlots,
 } from "@/lib/room-layout";
@@ -37,6 +37,25 @@ const CHAIR_HEIGHT = 14;
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(value, max));
+}
+
+function clampPan(
+  pan: PanOffset,
+  zoom: number,
+  width: number,
+  height: number,
+): PanOffset {
+  if (zoom <= 1) {
+    return { x: 0, y: 0 };
+  }
+
+  const maxX = ((zoom - 1) * width) / 2;
+  const maxY = ((zoom - 1) * height) / 2;
+
+  return {
+    x: clamp(pan.x, -maxX, maxX),
+    y: clamp(pan.y, -maxY, maxY),
+  };
 }
 
 function createTransform(centerX: number, centerY: number, zoom: number, pan: PanOffset) {
@@ -83,10 +102,18 @@ export default function AdminTableLayoutEditor({
   const [zoom, setZoom] = useState(0.8);
   const [pan, setPan] = useState<PanOffset>({ x: 0, y: 0 });
   const [positions, setPositions] = useState<Record<string, Position>>({});
+  const hasInitializedRef = useRef(false);
+  const structureSignature = mesas
+    .map((mesa) => `${mesa.numero}:${mesa.sillas.length}`)
+    .sort()
+    .join("|");
+  const previousStructureSignatureRef = useRef(structureSignature);
 
   const bounds = getEventBounds(mesas);
-  const centerX = ROOM_LAYOUT_WIDTH / 2;
-  const centerY = ROOM_LAYOUT_HEIGHT / 2;
+  const computedFrame = getPlanFrame(mesas);
+  const [sceneFrame, setSceneFrame] = useState<PlanFrame>(computedFrame);
+  const centerX = sceneFrame.centerX;
+  const centerY = sceneFrame.centerY;
 
   useEffect(() => {
     const nextPositions = Object.fromEntries(
@@ -103,21 +130,48 @@ export default function AdminTableLayoutEditor({
   }, [mesas]);
 
   useEffect(() => {
+    const structureChanged =
+      previousStructureSignatureRef.current !== structureSignature;
+
+    if (structureChanged) {
+      setSceneFrame(computedFrame);
+      hasInitializedRef.current = false;
+      previousStructureSignatureRef.current = structureSignature;
+    }
+  }, [computedFrame, structureSignature]);
+
+  useEffect(() => {
+    if ((draggingMesa || draggingView) && mesas.length > 0) {
+      return;
+    }
+
     const fitZoom = clamp(
       Math.min(
-        (ROOM_LAYOUT_WIDTH * 0.72) / Math.max(bounds.width + 220, 520),
-        (ROOM_LAYOUT_HEIGHT * 0.72) / Math.max(bounds.height + 220, 360),
+        (sceneFrame.width * 0.84) / Math.max(bounds.width + 180, 520),
+        (sceneFrame.height * 0.84) / Math.max(bounds.height + 180, 360),
       ),
       0.68,
       1.2,
     );
 
+    if (hasInitializedRef.current && mesas.length > 0) {
+      return;
+    }
+
     setZoom(fitZoom);
-    setPan({
-      x: fitZoom * (centerX - bounds.centerX),
-      y: fitZoom * (centerY - bounds.centerY),
-    });
-  }, [bounds.centerX, bounds.centerY, bounds.height, bounds.width, centerX, centerY]);
+    setPan(
+      clampPan(
+        {
+          x: fitZoom * (centerX - bounds.centerX),
+          y: fitZoom * (centerY - bounds.centerY),
+        },
+        fitZoom,
+        sceneFrame.width,
+        sceneFrame.height,
+      ),
+    );
+    hasInitializedRef.current = true;
+  }, [bounds.centerX, bounds.centerY, bounds.height, bounds.width, centerX, centerY, draggingMesa, draggingView, mesas.length, sceneFrame.height, sceneFrame.width]);
 
   useEffect(() => {
     function handleFullscreenChange() {
@@ -147,8 +201,10 @@ export default function AdminTableLayoutEditor({
       event.stopPropagation();
 
       const rect = viewportElement.getBoundingClientRect();
-      const pointerX = ((event.clientX - rect.left) / rect.width) * ROOM_LAYOUT_WIDTH;
-      const pointerY = ((event.clientY - rect.top) / rect.height) * ROOM_LAYOUT_HEIGHT;
+      const pointerX =
+        sceneFrame.minX + ((event.clientX - rect.left) / rect.width) * sceneFrame.width;
+      const pointerY =
+        sceneFrame.minY + ((event.clientY - rect.top) / rect.height) * sceneFrame.height;
 
       setZoom((previousZoom) => {
         const nextZoom = clamp(
@@ -165,10 +221,15 @@ export default function AdminTableLayoutEditor({
           const worldX = centerX + (pointerX - centerX - currentPan.x) / previousZoom;
           const worldY = centerY + (pointerY - centerY - currentPan.y) / previousZoom;
 
-          return {
-            x: pointerX - centerX - nextZoom * (worldX - centerX),
-            y: pointerY - centerY - nextZoom * (worldY - centerY),
-          };
+          return clampPan(
+            {
+              x: pointerX - centerX - nextZoom * (worldX - centerX),
+              y: pointerY - centerY - nextZoom * (worldY - centerY),
+            },
+            nextZoom,
+            sceneFrame.width,
+            sceneFrame.height,
+          );
         });
 
         return nextZoom;
@@ -180,7 +241,7 @@ export default function AdminTableLayoutEditor({
     return () => {
       viewportElement.removeEventListener("wheel", handleWheel);
     };
-  }, [centerX, centerY]);
+  }, [centerX, centerY, sceneFrame.height, sceneFrame.minX, sceneFrame.minY, sceneFrame.width]);
 
   function getPointFromEvent(event: { clientX: number; clientY: number }) {
     const rect = viewportRef.current?.getBoundingClientRect();
@@ -189,8 +250,10 @@ export default function AdminTableLayoutEditor({
       return null;
     }
 
-    const localX = ((event.clientX - rect.left) / rect.width) * ROOM_LAYOUT_WIDTH;
-    const localY = ((event.clientY - rect.top) / rect.height) * ROOM_LAYOUT_HEIGHT;
+    const localX =
+      sceneFrame.minX + ((event.clientX - rect.left) / rect.width) * sceneFrame.width;
+    const localY =
+      sceneFrame.minY + ((event.clientY - rect.top) / rect.height) * sceneFrame.height;
 
     return {
       x: centerX + (localX - centerX - pan.x) / zoom,
@@ -233,15 +296,15 @@ export default function AdminTableLayoutEditor({
           pos_x: Math.round(
             clamp(
               point.x - tableDragRef.current.pointerOffsetX,
-              mesaDimensions.width / 2 + 50,
-              ROOM_LAYOUT_WIDTH - mesaDimensions.width / 2 - 50,
+              sceneFrame.minX + mesaDimensions.width / 2 + 50,
+              sceneFrame.minX + sceneFrame.width - mesaDimensions.width / 2 - 50,
             ),
           ),
           pos_y: Math.round(
             clamp(
               point.y - tableDragRef.current.pointerOffsetY,
-              mesaDimensions.height / 2 + 50,
-              ROOM_LAYOUT_HEIGHT - mesaDimensions.height / 2 - 50,
+              sceneFrame.minY + mesaDimensions.height / 2 + 50,
+              sceneFrame.minY + sceneFrame.height - mesaDimensions.height / 2 - 50,
             ),
           ),
         },
@@ -254,16 +317,23 @@ export default function AdminTableLayoutEditor({
     }
 
     const deltaX = ((event.clientX - dragStateRef.current.startX) /
-      (viewportRef.current?.clientWidth ?? ROOM_LAYOUT_WIDTH)) *
-      ROOM_LAYOUT_WIDTH;
+      (viewportRef.current?.clientWidth ?? sceneFrame.width)) *
+      sceneFrame.width;
     const deltaY = ((event.clientY - dragStateRef.current.startY) /
-      (viewportRef.current?.clientHeight ?? ROOM_LAYOUT_HEIGHT)) *
-      ROOM_LAYOUT_HEIGHT;
+      (viewportRef.current?.clientHeight ?? sceneFrame.height)) *
+      sceneFrame.height;
 
-    setPan({
-      x: dragStateRef.current.originX + deltaX,
-      y: dragStateRef.current.originY + deltaY,
-    });
+    setPan(
+      clampPan(
+        {
+          x: dragStateRef.current.originX + deltaX,
+          y: dragStateRef.current.originY + deltaY,
+        },
+        zoom,
+        sceneFrame.width,
+        sceneFrame.height,
+      ),
+    );
   }
 
   async function endMesaDrag() {
@@ -337,7 +407,9 @@ export default function AdminTableLayoutEditor({
   return (
     <div
       ref={containerRef}
-      className="overflow-hidden rounded-[28px] border border-stone-200 bg-[linear-gradient(180deg,_#ffffff,_#fafaf9)] p-4"
+      className={`overflow-hidden rounded-[28px] border border-stone-200 bg-[linear-gradient(180deg,_#ffffff,_#fafaf9)] p-4 ${
+        isFullscreen ? "flex h-screen flex-col" : ""
+      }`}
     >
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -365,30 +437,27 @@ export default function AdminTableLayoutEditor({
         onPointerMove={handleViewportPointerMove}
         onPointerUp={endViewportDrag}
         onPointerLeave={endViewportDrag}
-        style={{ touchAction: "none", overscrollBehavior: "contain" }}
+        style={{
+          touchAction: "none",
+          overscrollBehavior: "contain",
+          height: isFullscreen ? "calc(100vh - 140px)" : "560px",
+          minHeight: isFullscreen ? "calc(100vh - 140px)" : "560px",
+        }}
       >
         <svg
-          viewBox={`0 0 ${ROOM_LAYOUT_WIDTH} ${ROOM_LAYOUT_HEIGHT}`}
+          viewBox={`${sceneFrame.minX} ${sceneFrame.minY} ${sceneFrame.width} ${sceneFrame.height}`}
           className="h-full w-full"
         >
           <g transform={createTransform(centerX, centerY, zoom, pan)}>
             <rect
-              x="0"
-              y="0"
-              width={ROOM_LAYOUT_WIDTH}
-              height={ROOM_LAYOUT_HEIGHT}
-              fill="#ece4d5"
-            />
-
-            <rect
-              x="120"
-              y="120"
-              width={ROOM_LAYOUT_WIDTH - 240}
-              height={ROOM_LAYOUT_HEIGHT - 240}
-              rx="48"
+              x={sceneFrame.minX + 36}
+              y={sceneFrame.minY + 36}
+              width={sceneFrame.width - 72}
+              height={sceneFrame.height - 72}
+              rx="36"
               fill="#f7f0e5"
               stroke="#e7dcc7"
-              strokeWidth="8"
+              strokeWidth="6"
             />
 
             {mesas.map((mesa) => {

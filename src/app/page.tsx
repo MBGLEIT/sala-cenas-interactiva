@@ -225,6 +225,58 @@ export default function Home() {
           }
         },
       )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "mesas",
+          filter: `evento_id=eq.${evento.id}`,
+        },
+        async () => {
+          try {
+            const eventoActualizado = await fetchEventoSala(evento.id);
+            setEvento(eventoActualizado);
+          } catch {
+            setError("No se pudo actualizar la sala en este momento.");
+          }
+        },
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "sillas",
+        },
+        async () => {
+          try {
+            const eventoActualizado = await fetchEventoSala(evento.id);
+            setEvento(eventoActualizado);
+          } catch {
+            setError("No se pudo actualizar la sala en este momento.");
+          }
+        },
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "eventos",
+          filter: `id=eq.${evento.id}`,
+        },
+        async () => {
+          try {
+            const eventoActualizado = await fetchEventoSala(evento.id);
+            setEvento(eventoActualizado);
+          } catch {
+            setError("Este evento ya no esta disponible.");
+            setEvento(null);
+            setSelectedSillaId(null);
+          }
+        },
+      )
       .subscribe((status) => {
         setRealtimeConnected(status === "SUBSCRIBED");
       });
@@ -439,7 +491,7 @@ export default function Home() {
                 href="/admin"
                 className="inline-flex min-w-[220px] items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-4 text-sm font-semibold uppercase tracking-[0.2em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
               >
-                Eres administrador?
+                ¿ERES ADMINISTRADOR?
               </Link>
             </div>
           </form>
@@ -527,11 +579,64 @@ export default function Home() {
                     ? "Guardando..."
                     : reservaActual
                       ? "Reserva ya asignada"
-                      : seleccionActual
+                    : seleccionActual
                         ? `Confirmar Mesa ${seleccionActual.mesaNumero}, Silla ${seleccionActual.sillaNumero}`
                         : "Confirmar reserva"}
                 </button>
               </div>
+
+              {selectedSillaId && !reservaActual ? (
+                <div className="mt-5 rounded-3xl border border-amber-300 bg-[linear-gradient(180deg,_#fff8db,_#fff1b8)] px-5 py-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]">
+                  <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-800">
+                    Datos importantes para la cena
+                  </p>
+                  <p className="mt-2 text-sm leading-6 text-amber-900/80">
+                    Marca aqui cualquier aviso relevante para que el equipo lo
+                    tenga presente antes del servicio.
+                  </p>
+                  <div className="mt-4 grid gap-3 md:grid-cols-3">
+                    <label className="flex items-center gap-3 rounded-2xl border border-amber-300 bg-white/80 px-4 py-3 text-sm font-medium text-stone-800">
+                      <input
+                        type="checkbox"
+                        checked={esCeliaco}
+                        onChange={(event) => setEsCeliaco(event.target.checked)}
+                        className="h-4 w-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500"
+                      />
+                      Es celiaco
+                    </label>
+                    <label className="flex items-center gap-3 rounded-2xl border border-amber-300 bg-white/80 px-4 py-3 text-sm font-medium text-stone-800">
+                      <input
+                        type="checkbox"
+                        checked={tieneAlergias}
+                        onChange={(event) => setTieneAlergias(event.target.checked)}
+                        className="h-4 w-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500"
+                      />
+                      Tiene alergias
+                    </label>
+                    <label className="flex items-center gap-3 rounded-2xl border border-amber-300 bg-white/80 px-4 py-3 text-sm font-medium text-stone-800">
+                      <input
+                        type="checkbox"
+                        checked={movilidadReducida}
+                        onChange={(event) => setMovilidadReducida(event.target.checked)}
+                        className="h-4 w-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500"
+                      />
+                      Movilidad reducida
+                    </label>
+                  </div>
+                  <label className="mt-4 block">
+                    <span className="text-sm font-semibold text-amber-900/80">
+                      Observaciones relevantes
+                    </span>
+                    <textarea
+                      value={observacionesReserva}
+                      onChange={(event) => setObservacionesReserva(event.target.value)}
+                      placeholder="Ejemplo: alergia a frutos secos, sin lactosa o necesita acceso facil."
+                      rows={3}
+                      className="mt-2 w-full rounded-2xl border border-amber-300 bg-white/90 px-4 py-3 text-sm text-stone-900 outline-none transition focus:border-amber-500"
+                    />
+                  </label>
+                </div>
+              ) : null}
 
               {infoMessage ? (
                 <div className="mt-5 rounded-3xl border border-emerald-200 bg-emerald-50 px-5 py-4 text-emerald-700">
@@ -561,55 +666,6 @@ export default function Home() {
                       ? `Has elegido la Mesa ${seleccionActual.mesaNumero}, Silla ${seleccionActual.sillaNumero}.`
                       : "Has elegido una silla para confirmar."}
                   </p>
-                </div>
-              ) : null}
-
-              {selectedSillaId && !reservaActual ? (
-                <div className="mt-5 rounded-3xl border border-stone-200 bg-white px-4 py-4">
-                  <p className="text-sm font-semibold uppercase tracking-[0.18em] text-stone-600">
-                    Datos importantes para la cena
-                  </p>
-                  <div className="mt-4 grid gap-3 md:grid-cols-3">
-                    <label className="flex items-center gap-3 rounded-2xl border border-stone-200 px-4 py-3 text-sm text-stone-700">
-                      <input
-                        type="checkbox"
-                        checked={esCeliaco}
-                        onChange={(event) => setEsCeliaco(event.target.checked)}
-                        className="h-4 w-4 rounded border-stone-300 text-emerald-600 focus:ring-emerald-500"
-                      />
-                      Es celiaco
-                    </label>
-                    <label className="flex items-center gap-3 rounded-2xl border border-stone-200 px-4 py-3 text-sm text-stone-700">
-                      <input
-                        type="checkbox"
-                        checked={tieneAlergias}
-                        onChange={(event) => setTieneAlergias(event.target.checked)}
-                        className="h-4 w-4 rounded border-stone-300 text-emerald-600 focus:ring-emerald-500"
-                      />
-                      Tiene alergias
-                    </label>
-                    <label className="flex items-center gap-3 rounded-2xl border border-stone-200 px-4 py-3 text-sm text-stone-700">
-                      <input
-                        type="checkbox"
-                        checked={movilidadReducida}
-                        onChange={(event) => setMovilidadReducida(event.target.checked)}
-                        className="h-4 w-4 rounded border-stone-300 text-emerald-600 focus:ring-emerald-500"
-                      />
-                      Movilidad reducida
-                    </label>
-                  </div>
-                  <label className="mt-4 block">
-                    <span className="text-sm font-semibold text-stone-600">
-                      Observaciones relevantes
-                    </span>
-                    <textarea
-                      value={observacionesReserva}
-                      onChange={(event) => setObservacionesReserva(event.target.value)}
-                      placeholder="Ejemplo: alergia a frutos secos, sin lactosa o necesita acceso facil."
-                      rows={3}
-                      className="mt-2 w-full rounded-2xl border border-stone-300 bg-stone-50 px-4 py-3 text-sm text-stone-900 outline-none transition focus:border-amber-500 focus:bg-white"
-                    />
-                  </label>
                 </div>
               ) : null}
 

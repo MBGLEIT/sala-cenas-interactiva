@@ -21,8 +21,8 @@ type DinnerRoomTable3DProps = {
 };
 
 const TABLE_WORLD_HEIGHT = 0.18;
-const HIT_WIDTH = 1.45;
-const HIT_DEPTH = 1.12;
+const HIT_WIDTH = 0.78;
+const HIT_DEPTH = 0.64;
 
 let woodTextureCache: CanvasTexture | null = null;
 let clothTextureCache: CanvasTexture | null = null;
@@ -147,23 +147,26 @@ function ChairModel({
       </RoundedBox>
 
       {[
-        [-0.22, -0.02, -0.14],
-        [0.22, -0.02, -0.14],
-        [-0.22, -0.02, 0.14],
-        [0.22, -0.02, 0.14],
+        [-0.22, -0.19, -0.14],
+        [0.22, -0.19, -0.14],
+        [-0.22, -0.19, 0.14],
+        [0.22, -0.19, 0.14],
       ].map((position, index) => (
         <mesh key={index} castShadow position={position as [number, number, number]}>
-          <cylinderGeometry args={[0.03, 0.04, 0.56, 12]} />
+          <cylinderGeometry args={[0.028, 0.035, 0.4, 12]} />
           <meshStandardMaterial color="#3f3f46" roughness={0.68} metalness={0.25} />
         </mesh>
       ))}
 
       <Text
-        position={[0, 0.09, 0.02]}
+        position={[0, 0.125, 0.02]}
+        rotation={[-Math.PI / 2, 0, 0]}
         fontSize={0.16}
-        color="#ffffff"
+        color={selected || color === "#facc15" ? "#2b1605" : "#f8fafc"}
         anchorX="center"
         anchorY="middle"
+        outlineWidth={0.012}
+        outlineColor={selected || color === "#facc15" ? "#fef3c7" : "#14532d"}
       >
         {String(number)}
       </Text>
@@ -200,10 +203,15 @@ export default function DinnerRoomTable3D({
   }, [sillas.length, tableDimensions, tableWorldDepth, tableWorldWidth]);
 
   function handleChairSelection(
+    button: number,
     sillaId: string,
     sillaOcupada: boolean,
     sillaEsDelAsistente: boolean,
   ) {
+    if (button !== 0) {
+      return;
+    }
+
     if (selectionLocked || sillaOcupada || sillaEsDelAsistente) {
       return;
     }
@@ -250,22 +258,17 @@ export default function DinnerRoomTable3D({
         />
       </RoundedBox>
 
-      <mesh castShadow position={[0, 0.24, 0]}>
-        <cylinderGeometry args={[0.12, 0.12, 0.18, 20]} />
-        <meshStandardMaterial color="#c8a54f" metalness={0.5} roughness={0.3} />
-      </mesh>
-
-      <mesh castShadow position={[0, 0.38, 0]}>
-        <sphereGeometry args={[0.08, 20, 20]} />
-        <meshStandardMaterial color="#8f1d2c" roughness={0.7} />
-      </mesh>
-
       <Text
-        position={[0, 0.3, 0]}
-        fontSize={0.24}
-        color="#292524"
+        position={[0, 0.24, 0]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        fontSize={Math.min(0.68, tableWorldWidth * 0.22)}
+        color="#241711"
         anchorX="center"
         anchorY="middle"
+        outlineWidth={0.03}
+        outlineColor="#fef3c7"
+        renderOrder={12}
+        depthOffset={-10}
       >
         {`Mesa ${mesaNumero}`}
       </Text>
@@ -286,25 +289,32 @@ export default function DinnerRoomTable3D({
         return (
           <group
             key={silla.id}
-            position={[slot.x, 0, slot.z]}
+            position={[slot.x, -0.46, slot.z]}
             rotation={[0, slot.rotation, 0]}
           >
             <mesh
               onPointerDown={(event) => {
-                event.stopPropagation();
+                if (event.button === 0) {
+                  event.stopPropagation();
+                }
               }}
               onPointerUp={(event) => {
+                if (event.button !== 0) {
+                  return;
+                }
+
                 event.stopPropagation();
-                handleChairSelection(silla.id, sillaOcupada, sillaEsDelAsistente);
-              }}
-              onClick={(event) => {
-                event.stopPropagation();
-                handleChairSelection(silla.id, sillaOcupada, sillaEsDelAsistente);
+                handleChairSelection(
+                  event.button,
+                  silla.id,
+                  sillaOcupada,
+                  sillaEsDelAsistente,
+                );
               }}
               castShadow
-              position={[0, 0.18, 0]}
+              position={[0, 0.11, 0.01]}
             >
-              <boxGeometry args={[HIT_WIDTH, 0.4, HIT_DEPTH]} />
+              <boxGeometry args={[HIT_WIDTH, 0.16, HIT_DEPTH]} />
               <meshBasicMaterial transparent opacity={0.01} depthWrite={false} />
             </mesh>
 

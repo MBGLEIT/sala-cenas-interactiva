@@ -1,5 +1,5 @@
-export const ROOM_LAYOUT_WIDTH = 2200;
-export const ROOM_LAYOUT_HEIGHT = 1600;
+export const ROOM_LAYOUT_WIDTH = 4200;
+export const ROOM_LAYOUT_HEIGHT = 3000;
 export const ROOM_WORLD_SCALE = 0.015;
 
 export const TABLE_PLAN_WIDTH = 180;
@@ -23,11 +23,26 @@ export type EventBounds = {
   centerY: number;
 };
 
+export type SceneFrame = {
+  minX: number;
+  minY: number;
+  width: number;
+  height: number;
+  centerX: number;
+  centerY: number;
+};
+
+export type PlanFrame = SceneFrame;
+
 export type TableDimensions = {
   width: number;
   height: number;
   chairOffset: number;
 };
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(value, max));
+}
 
 function mapPerimeterPoint(
   distance: number,
@@ -103,10 +118,10 @@ export function getRectangleChairSlots(
   const leftCount = Math.floor(shortCount / 2);
 
   return [
-    ...distributeAlongHorizontal(topCount, width, -(height / 2 + offset), -Math.PI / 2),
-    ...distributeAlongVertical(rightCount, height, width / 2 + offset, 0),
-    ...distributeAlongHorizontal(bottomCount, width, height / 2 + offset, Math.PI / 2),
-    ...distributeAlongVertical(leftCount, height, -(width / 2 + offset), Math.PI),
+    ...distributeAlongHorizontal(topCount, width, -(height / 2 + offset), 0),
+    ...distributeAlongVertical(rightCount, height, width / 2 + offset, -Math.PI / 2),
+    ...distributeAlongHorizontal(bottomCount, width, height / 2 + offset, Math.PI),
+    ...distributeAlongVertical(leftCount, height, -(width / 2 + offset), Math.PI / 2),
   ];
 }
 
@@ -165,41 +180,41 @@ function distributeAlongVertical(
 export function getTableDimensions(chairCount: number): TableDimensions {
   if (chairCount <= 8) {
     return {
-      width: 180,
-      height: 100,
-      chairOffset: 44,
+      width: 196,
+      height: 108,
+      chairOffset: 34,
     };
   }
 
   if (chairCount <= 10) {
     return {
-      width: 220,
-      height: 108,
-      chairOffset: 48,
+      width: 236,
+      height: 116,
+      chairOffset: 36,
     };
   }
 
   if (chairCount <= 12) {
     return {
-      width: 258,
-      height: 118,
-      chairOffset: 52,
+      width: 278,
+      height: 126,
+      chairOffset: 38,
     };
   }
 
   return {
-    width: 258 + (chairCount - 12) * 16,
-    height: 126 + Math.ceil((chairCount - 12) / 2) * 8,
-    chairOffset: 56,
+    width: 278 + (chairCount - 12) * 20,
+    height: 132 + Math.ceil((chairCount - 12) / 2) * 10,
+    chairOffset: 40,
   };
 }
 
 export function getNextMesaPosition(existingTables: number) {
-  const columns = 5;
-  const startX = 260;
-  const startY = 240;
-  const gapX = 380;
-  const gapY = 230;
+  const columns = 6;
+  const startX = 420;
+  const startY = 360;
+  const gapX = 520;
+  const gapY = 330;
   const col = existingTables % columns;
   const row = Math.floor(existingTables / columns);
 
@@ -267,5 +282,63 @@ export function getEventBounds(
     height: maxY - minY,
     centerX: (minX + maxX) / 2,
     centerY: (minY + maxY) / 2,
+  };
+}
+
+export function getSceneFrame(
+  mesas: Array<{ pos_x: number; pos_y: number; sillas: Array<unknown> }>,
+): SceneFrame {
+  const bounds = getEventBounds(mesas);
+  const basePaddingX = 240;
+  const basePaddingTop = 210;
+  const basePaddingBottom = 180;
+  const contentWidth = Math.max(bounds.width + basePaddingX * 2, 1200);
+  const contentHeight = Math.max(bounds.height + basePaddingTop + basePaddingBottom, 900);
+  const minX = bounds.centerX - contentWidth / 2;
+  const minY = bounds.centerY - contentHeight / 2;
+
+  return {
+    minX,
+    minY,
+    width: contentWidth,
+    height: contentHeight,
+    centerX: bounds.centerX,
+    centerY: bounds.centerY,
+  };
+}
+
+export function getPlanFrame(
+  mesas: Array<{ pos_x: number; pos_y: number; sillas: Array<unknown> }>,
+): PlanFrame {
+  const bounds = getEventBounds(mesas);
+  const horizontalPadding = 150;
+  const topPadding = 190;
+  const bottomPadding = 120;
+  const minWidth = 900;
+  const minHeight = 700;
+  const rawMinX = Math.max(0, bounds.minX - horizontalPadding);
+  const rawMinY = Math.max(0, bounds.minY - topPadding);
+  const rawMaxX = Math.min(ROOM_LAYOUT_WIDTH, bounds.maxX + horizontalPadding);
+  const rawMaxY = Math.min(ROOM_LAYOUT_HEIGHT, bounds.maxY + bottomPadding);
+  const contentWidth = Math.max(rawMaxX - rawMinX, minWidth);
+  const contentHeight = Math.max(rawMaxY - rawMinY, minHeight);
+  const minX = clamp(
+    rawMinX - Math.max(0, minWidth - (rawMaxX - rawMinX)) / 2,
+    0,
+    Math.max(0, ROOM_LAYOUT_WIDTH - contentWidth),
+  );
+  const minY = clamp(
+    rawMinY - Math.max(0, minHeight - (rawMaxY - rawMinY)) / 2,
+    0,
+    Math.max(0, ROOM_LAYOUT_HEIGHT - contentHeight),
+  );
+
+  return {
+    minX,
+    minY,
+    width: contentWidth,
+    height: contentHeight,
+    centerX: minX + contentWidth / 2,
+    centerY: minY + contentHeight / 2,
   };
 }
