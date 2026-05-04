@@ -51,6 +51,16 @@ async function parseJsonResponse(response: Response) {
   } satisfies JsonResponse;
 }
 
+function createTimedAbortController(timeoutMs: number) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  return {
+    controller,
+    clear: () => window.clearTimeout(timeoutId),
+  };
+}
+
 function AdminCard({
   eyebrow,
   title,
@@ -675,15 +685,34 @@ export default function AdminDashboard({
 
     let response: Response;
     let result: JsonResponse;
+    const { controller, clear } = createTimedAbortController(90000);
 
     try {
       response = await fetch("/api/admin/mesas/import-plan", {
         method: "POST",
         body: formData,
+        signal: controller.signal,
       });
 
       result = await parseJsonResponse(response);
-    } catch {
+    } catch (error) {
+      clear();
+      const message =
+        error instanceof DOMException && error.name === "AbortError"
+          ? "La carga del plano tardo demasiado. Prueba con un archivo mas ligero o vuelve a intentarlo."
+          : "La carga del plano no pudo completarse. El servidor no devolvio una respuesta valida.";
+      setError(message);
+      pushToast({
+        tone: "error",
+        title: "Plano no cargado",
+        description: message,
+      });
+      return;
+    } finally {
+      clear();
+    }
+
+    if (!response) {
       const message =
         "La carga del plano no pudo completarse. El servidor no devolvio una respuesta valida.";
       setError(message);

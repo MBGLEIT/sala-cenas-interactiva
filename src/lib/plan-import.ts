@@ -59,7 +59,7 @@ type OcrVariant = {
   height: number;
 };
 
-const OCR_VARIANT_LIMIT_VERCEL = 2;
+const OCR_VARIANT_LIMIT_VERCEL = 1;
 
 function normalizeText(text: string) {
   return text
@@ -68,6 +68,15 @@ function normalizeText(text: string) {
     .replace(/[ \t]+/g, " ")
     .replace(/\n{2,}/g, "\n")
     .trim();
+}
+
+function parseNumericDimension(value: string | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  const match = value.match(/-?\d+(?:\.\d+)?/);
+  return match ? Number(match[0]) : null;
 }
 
 function decodeHtmlText(text: string) {
@@ -553,6 +562,64 @@ function parseSpreadsheetEntries(rows: Record<string, unknown>[]) {
   return results;
 }
 
+function parseSvgFile(text: string) {
+  const normalized = normalizeText(text);
+  const svgTagMatch = normalized.match(/<svg\b([^>]*)>/i);
+  const attributes = svgTagMatch?.[1] ?? "";
+  const width =
+    parseNumericDimension(attributes.match(/\bwidth\s*=\s*["']([^"']+)["']/i)?.[1]) ??
+    parseNumericDimension(attributes.match(/\bviewBox\s*=\s*["'][^"']*\s[^"']*\s([^"'\s]+)\s([^"'\s]+)["']/i)?.[1]) ??
+    1200;
+  const height =
+    parseNumericDimension(attributes.match(/\bheight\s*=\s*["']([^"']+)["']/i)?.[1]) ??
+    parseNumericDimension(attributes.match(/\bviewBox\s*=\s*["'][^"']*\s[^"']*\s([^"'\s]+)\s([^"'\s]+)["']/i)?.[2]) ??
+    800;
+
+  const entries: SpatialTextEntry[] = [];
+  const textRegex = /<text\b([^>]*)>([\s\S]*?)<\/text>/gi;
+
+  for (const match of normalized.matchAll(textRegex)) {
+    const attrText = match[1] ?? "";
+    const innerText = normalizeText(decodeHtmlText((match[2] ?? "").replace(/<[^>]+>/g, " ")));
+
+    if (!innerText) {
+      continue;
+    }
+
+    const x = parseNumericDimension(attrText.match(/\bx\s*=\s*["']([^"']+)["']/i)?.[1]) ?? 0;
+    const y = parseNumericDimension(attrText.match(/\by\s*=\s*["']([^"']+)["']/i)?.[1]) ?? 0;
+    const fontSize =
+      parseNumericDimension(attrText.match(/\bfont-size\s*=\s*["']([^"']+)["']/i)?.[1]) ?? 16;
+
+    entries.push({
+      text: innerText,
+      x,
+      y,
+      width: Math.max(innerText.length * (fontSize * 0.55), fontSize * 1.6),
+      height: Math.max(fontSize, 12),
+    });
+  }
+
+  const textEntries = parseGenericMesaSillaText(spatialEntriesToText(entries));
+  const spatialPairs = parseSpatialMesaSillaEntries(entries);
+  const mergedPairs = mergeExactChairCounts(spatialPairs, textEntries);
+
+  return {
+    tables:
+      mergedPairs.length > 0
+        ? mergedPairs
+        : assignOrderedFallbackPositions(textEntries),
+    sourceBounds:
+      entries.length > 0
+        ? {
+            width,
+            height,
+            ...(getContentBounds(mergedPairs.length > 0 ? mergedPairs : []) ?? {}),
+          }
+        : null,
+  };
+}
+
 function parseSpatialMesaSillaEntries(entries: SpatialTextEntry[]) {
   const normalizedEntries = entries
     .map((entry) => ({
@@ -893,8 +960,8 @@ async function extractOcrPairsFromBuffer(buffer: Buffer) {
       "node",
       "index.js",
     ),
-    corePath: path.resolve(process.cwd(), "node_modules", "tesseract.js-core"),
     logger: () => {},
+    cacheMethod: "none",
   });
 
   try {
@@ -902,6 +969,7 @@ async function extractOcrPairsFromBuffer(buffer: Buffer) {
       tessedit_pageseg_mode: tesseract.PSM.SPARSE_TEXT,
       preserve_interword_spaces: "1",
       user_defined_dpi: "300",
+      tessedit_char_whitelist: "MS:0123456789",
     });
 
     const variants = await createOcrVariants(buffer);
@@ -1065,6 +1133,20 @@ async function parsePdfFile(buffer: Buffer) {
   const parser = new PDFParse({ data: new Uint8Array(buffer) });
 
   try {
+    try {
+      const textResult = await parser.getText();
+      const parserTextEntries = parseGenericMesaSillaText(String(textResult.text ?? ""));
+
+      if (parserTextEntries.length > 0) {
+        textEntries = parserTextEntries;
+        return {
+          tables: assignOrderedFallbackPositions(parserTextEntries),
+          sourceBounds: null,
+        };
+      }
+    } catch {
+      // Si la extraccion textual del PDF falla, seguimos con OCR.
+    }
 
     const screenshotScales = [1.8, 2.4, 3];
     let bestOcrResult:
@@ -1169,6 +1251,16 @@ export async function importTablesFromPlanFile(
 
   if (mimeType.includes("pdf") || lowercaseName.endsWith(".pdf")) {
     const result = await parsePdfFile(bytes);
+    return entriesToImportedTables(
+      result.tables,
+      existingTableCount,
+      result.sourceBounds ?? undefined,
+    );
+  }
+
+  if (mimeType.includes("svg") || lowercaseName.endsWith(".svg")) {
+    const svgText = await parseTextLikeFile(bytes);
+    const result = parseSvgFile(svgText);
     return entriesToImportedTables(
       result.tables,
       existingTableCount,
