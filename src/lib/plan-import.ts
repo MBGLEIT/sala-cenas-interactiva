@@ -59,6 +59,8 @@ type OcrVariant = {
   height: number;
 };
 
+const OCR_VARIANT_LIMIT_VERCEL = 2;
+
 function normalizeText(text: string) {
   return text
     .replace(/\u0000/g, " ")
@@ -635,6 +637,14 @@ function parseSpatialMesaSillaEntries(entries: SpatialTextEntry[]) {
   return results;
 }
 
+function spatialEntriesToText(entries: SpatialTextEntry[]) {
+  return entries
+    .slice()
+    .sort((a, b) => (Math.abs(a.y - b.y) < 12 ? a.x - b.x : a.y - b.y))
+    .map((entry) => entry.text)
+    .join("\n");
+}
+
 function assignOrderedFallbackPositions(entries: MesaSillaPair[]) {
   if (entries.length === 0) {
     return [] as Array<MesaSillaPair & { x: number; y: number }>;
@@ -895,6 +905,7 @@ async function extractOcrPairsFromBuffer(buffer: Buffer) {
     });
 
     const variants = await createOcrVariants(buffer);
+    const runningOnVercel = Boolean(process.env.VERCEL);
     let bestResult: {
       pairs: MesaSillaPair[];
       width: number;
@@ -903,7 +914,11 @@ async function extractOcrPairsFromBuffer(buffer: Buffer) {
     } | null = null;
     let bestTextFallback: MesaSillaPair[] = [];
 
-    for (const variant of variants) {
+    for (const [index, variant] of variants.entries()) {
+      if (runningOnVercel && index >= OCR_VARIANT_LIMIT_VERCEL) {
+        break;
+      }
+
       const result = await worker.recognize(
         variant.buffer,
         {},
@@ -928,6 +943,13 @@ async function extractOcrPairsFromBuffer(buffer: Buffer) {
           height: variant.height,
           score,
         };
+      }
+
+      if (
+        runningOnVercel &&
+        bestResult.pairs.length >= Math.max(10, bestTextFallback.length)
+      ) {
+        break;
       }
     }
 
@@ -993,57 +1015,56 @@ async function parseSpreadsheetFile(buffer: Buffer) {
 
 async function parsePdfFile(buffer: Buffer) {
   const rawTextFallback = parseGenericMesaSillaText(buffer.toString("utf8"));
+  let textEntries = rawTextFallback;
+
+  try {
+    const digitalSpatialEntries = await parseDigitalPdfSpatialEntries(buffer);
+    const digitalSpatialPairs = parseSpatialMesaSillaEntries(digitalSpatialEntries);
+    const digitalTextEntries = parseGenericMesaSillaText(
+      spatialEntriesToText(digitalSpatialEntries),
+    );
+
+    if (digitalTextEntries.length > 0) {
+      textEntries = digitalTextEntries;
+    }
+
+    const mergedDigitalPairs = mergeExactChairCounts(digitalSpatialPairs, textEntries);
+
+    if (mergedDigitalPairs.length > 0) {
+      return {
+        tables: mergedDigitalPairs,
+        sourceBounds:
+          digitalSpatialPairs.length > 0
+            ? {
+                width: Math.max(
+                  ...digitalSpatialEntries.map((entry) => entry.x + entry.width),
+                  0,
+                ),
+                height: Math.max(
+                  ...digitalSpatialEntries.map((entry) => entry.y + entry.height),
+                  0,
+                ),
+                ...(getContentBounds(digitalSpatialPairs) ?? {}),
+              }
+            : null,
+      };
+    }
+  } catch {
+    // Si el PDF digital no nos da coordenadas utiles, seguimos con OCR o texto.
+  }
+
+  if (textEntries.length > 0) {
+    return {
+      tables: assignOrderedFallbackPositions(textEntries),
+      sourceBounds: null,
+    };
+  }
+
   const pdfModule = await import("pdf-parse");
   const { PDFParse } = pdfModule;
   const parser = new PDFParse({ data: new Uint8Array(buffer) });
 
   try {
-    let textEntries = rawTextFallback;
-
-    try {
-      const textResult = await parser.getText();
-      const parsedTextEntries = parseGenericMesaSillaText(textResult.text ?? "");
-      if (parsedTextEntries.length > 0) {
-        textEntries = parsedTextEntries;
-      }
-    } catch {
-      textEntries = rawTextFallback;
-    }
-
-    try {
-      const digitalSpatialEntries = await parseDigitalPdfSpatialEntries(buffer);
-      const digitalSpatialPairs = parseSpatialMesaSillaEntries(digitalSpatialEntries);
-      const mergedDigitalPairs = mergeExactChairCounts(digitalSpatialPairs, textEntries);
-
-      if (mergedDigitalPairs.length > 0) {
-        return {
-          tables: mergedDigitalPairs,
-          sourceBounds:
-            digitalSpatialPairs.length > 0
-              ? {
-                  width: Math.max(
-                    ...digitalSpatialEntries.map((entry) => entry.x + entry.width),
-                    0,
-                  ),
-                  height: Math.max(
-                    ...digitalSpatialEntries.map((entry) => entry.y + entry.height),
-                    0,
-                  ),
-                  ...(getContentBounds(digitalSpatialPairs) ?? {}),
-                }
-              : null,
-        };
-      }
-    } catch {
-      // Si el PDF digital no nos da coordenadas utiles, seguimos con OCR o texto.
-    }
-
-    if (textEntries.length > 0) {
-      return {
-        tables: assignOrderedFallbackPositions(textEntries),
-        sourceBounds: null,
-      };
-    }
 
     const screenshotScales = [1.8, 2.4, 3];
     let bestOcrResult:

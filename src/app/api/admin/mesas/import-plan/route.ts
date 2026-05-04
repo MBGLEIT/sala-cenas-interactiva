@@ -5,6 +5,9 @@ import { importTablesFromPlanFile } from "@/lib/plan-import";
 import { adminImportPlanSchema } from "@/lib/schemas";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
+export const runtime = "nodejs";
+export const maxDuration = 300;
+
 export async function POST(request: Request) {
   if (!isAdminAuthenticated()) {
     return NextResponse.json(
@@ -56,7 +59,8 @@ export async function POST(request: Request) {
       file,
       mesasExistentes?.length ?? 0,
     );
-  } catch {
+  } catch (error) {
+    console.error("Plan import failed", error);
     return NextResponse.json(
       {
         error:

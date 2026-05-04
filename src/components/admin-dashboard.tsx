@@ -37,7 +37,18 @@ type ChairRow = {
 };
 
 async function parseJsonResponse(response: Response) {
-  return (await response.json()) as JsonResponse;
+  const contentType = response.headers.get("content-type") ?? "";
+
+  if (contentType.includes("application/json")) {
+    return (await response.json()) as JsonResponse;
+  }
+
+  const rawText = await response.text();
+  return {
+    error:
+      rawText.trim() ||
+      "La respuesta del servidor no se pudo interpretar correctamente.",
+  } satisfies JsonResponse;
 }
 
 function AdminCard({
@@ -662,12 +673,27 @@ export default function AdminDashboard({
     formData.append("eventoId", selectedEventId);
     formData.append("file", planFile);
 
-    const response = await fetch("/api/admin/mesas/import-plan", {
-      method: "POST",
-      body: formData,
-    });
+    let response: Response;
+    let result: JsonResponse;
 
-    const result = await parseJsonResponse(response);
+    try {
+      response = await fetch("/api/admin/mesas/import-plan", {
+        method: "POST",
+        body: formData,
+      });
+
+      result = await parseJsonResponse(response);
+    } catch {
+      const message =
+        "La carga del plano no pudo completarse. El servidor no devolvio una respuesta valida.";
+      setError(message);
+      pushToast({
+        tone: "error",
+        title: "Plano no cargado",
+        description: message,
+      });
+      return;
+    }
 
     if (!response.ok) {
       const message = result.error ?? "No se pudo cargar el plano.";
