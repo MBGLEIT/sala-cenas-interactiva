@@ -2,11 +2,19 @@
 
 import { CanvasTexture, RepeatWrapping, SRGBColorSpace } from "three";
 
+import {
+  ROOM_LAYOUT_HEIGHT,
+  ROOM_LAYOUT_WIDTH,
+  ROOM_WORLD_SCALE,
+  getEventTitleFootprint,
+} from "@/lib/room-layout";
+
 type DinnerRoomHall3DProps = {
   width: number;
   depth: number;
   centerX: number;
   centerZ: number;
+  eventName: string;
 };
 
 let floorTextureCache: CanvasTexture | null = null;
@@ -113,9 +121,17 @@ export default function DinnerRoomHall3D({
   depth,
   centerX,
   centerZ,
+  eventName,
 }: DinnerRoomHall3DProps) {
   const carpetWidth = width * 0.78;
   const carpetDepth = depth * 0.72;
+  const titleFootprint = getEventTitleFootprint(
+    eventName,
+    ROOM_LAYOUT_WIDTH,
+    ROOM_LAYOUT_HEIGHT,
+  );
+  const titleWidth = titleFootprint.safeWidth * ROOM_WORLD_SCALE;
+  const titleDepth = titleFootprint.safeHeight * ROOM_WORLD_SCALE;
 
   return (
     <>
@@ -135,6 +151,11 @@ export default function DinnerRoomHall3D({
           map={getCarpetTexture() ?? undefined}
           roughness={0.94}
         />
+      </mesh>
+
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.784, 0]} receiveShadow>
+        <planeGeometry args={[titleWidth, titleDepth]} />
+        <meshStandardMaterial color="#7d5b42" transparent opacity={0.22} roughness={0.96} />
       </mesh>
     </>
   );

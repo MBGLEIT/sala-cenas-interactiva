@@ -1,21 +1,41 @@
 import "server-only";
 
+import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { Jimp } from "jimp";
+import sharp from "sharp";
 
 import {
   ROOM_LAYOUT_HEIGHT,
   ROOM_LAYOUT_WIDTH,
+  getEventTitleFootprint,
   getNextMesaPosition,
   getTableDimensions,
 } from "@/lib/room-layout";
+import {
+  appendPlanImportTraceLog,
+  assertPlanImportNotCancelled,
+  getPlanImportAbortSignal,
+  PlanImportCancelledError,
+} from "@/lib/plan-import-runtime";
 
 export type ImportedPlanTable = {
   numero: number;
   chairCount: number;
   posX: number;
   posY: number;
+};
+
+export type PlanImportHints = {
+  expectedTableCount?: number;
+  expectedRowCount?: number;
+  expectedColumnCount?: number;
+  expectedChairTotal?: number;
+  eventName?: string;
+  learningContext?: string;
 };
 
 type SpatialTextEntry = {
@@ -40,6 +60,7 @@ type ImportSourceBounds = {
   minY?: number;
   maxX?: number;
   maxY?: number;
+  preferRegularized?: boolean;
 };
 
 type OcrToken = {
@@ -52,14 +73,785 @@ type OcrToken = {
   confidence: number;
 };
 
+type OcrWord = {
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  confidence: number;
+};
+
 type OcrVariant = {
   label: string;
   buffer: Buffer;
   width: number;
   height: number;
+  scale: number;
+};
+
+type OcrRunResult = {
+  label: string;
+  buffer: Buffer;
+  width: number;
+  height: number;
+  scale: number;
+  tokens: OcrToken[];
+  pairs: MesaSillaPair[];
+  textFallback: MesaSillaPair[];
+  score: number;
+};
+
+type CropRegion = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type OcrWorkerLike = {
+  recognize: (
+    image: Buffer,
+    options?: Record<string, unknown>,
+    output?: Record<string, unknown>,
+  ) => Promise<{
+    data: {
+      hocr?: string | null;
+      text?: string | null;
+    };
+  }>;
+};
+
+type PaddleOcrVariantResult = {
+  variant: string;
+  texts: string[];
+};
+
+type PaddleOcrCropResult = {
+  index?: number | null;
+  numero?: number | null;
+  chairCount?: number | null;
+  numeroCandidates?: number[];
+  chairCandidates?: number[];
+  variants?: PaddleOcrVariantResult[];
+};
+
+type AdvancedVisionLayoutResult = {
+  tables: Array<MesaSillaPair & { x: number; y: number }>;
+  sourceBounds: { width: number; height: number } | null;
+  meta?: Record<string, unknown>;
+};
+
+type AiImportedPlanTable = {
+  numero: number;
+  chairCount: number;
+  x: number;
+  y: number;
+  confidence?: number;
+};
+
+type AiImportedPlanPayload = {
+  width?: number;
+  height?: number;
+  tables: AiImportedPlanTable[];
+};
+
+type AiOrderedPlanTable = {
+  numero: number;
+  chairCount: number;
+};
+
+type AiOrderedPlanPayload = {
+  tables: AiOrderedPlanTable[];
+};
+
+type PlanImportDebugContext = {
+  traceId: string;
+};
+
+type DetectedImageLayout = {
+  tables: MesaSillaPair[];
+  sourceBounds: ImportSourceBounds;
+  nearestDistance: number;
 };
 
 const OCR_VARIANT_LIMIT_VERCEL = 1;
+const OPENAI_IMPORT_MODEL = process.env.OPENAI_IMPORT_MODEL?.trim() || "gpt-4.1";
+const IMAGE_GEOMETRY_TIMEOUT_MS = 20000;
+const IMAGE_GEOMETRY_OCR_TIMEOUT_MS = 45000;
+const IMAGE_ADVANCED_VISION_TIMEOUT_MS = 240000;
+const PADDLE_PLAN_OCR_TIMEOUT_MS = 240000;
+const PADDLE_PYTHON_PATH = "C:\\Users\\Administrador\\AppData\\Local\\Programs\\Python\\Python312\\python.exe";
+
+function logPlanImport(
+  debugContext: PlanImportDebugContext | undefined,
+  stage: string,
+  details?: Record<string, unknown>,
+) {
+  if (!debugContext) {
+    return;
+  }
+
+  if (details) {
+    console.info(`[plan-import:${debugContext.traceId}] ${stage}`, details);
+    appendPlanImportTraceLog(debugContext.traceId, "info", stage, details);
+    return;
+  }
+
+  console.info(`[plan-import:${debugContext.traceId}] ${stage}`);
+  appendPlanImportTraceLog(debugContext.traceId, "info", stage);
+}
+
+function assertImportNotCancelled(debugContext?: PlanImportDebugContext) {
+  if (!debugContext) {
+    return;
+  }
+
+  assertPlanImportNotCancelled(debugContext.traceId);
+}
+
+function getImportAbortSignal(debugContext?: PlanImportDebugContext) {
+  if (!debugContext) {
+    return undefined;
+  }
+
+  return getPlanImportAbortSignal(debugContext.traceId);
+}
+
+async function execFileWithImportAbort(
+  file: string,
+  args: string[],
+  options: Parameters<typeof execFile>[2] & { signal?: AbortSignal },
+) {
+  return await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+    execFile(file, args, options, (error, stdout, stderr) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve({
+        stdout: typeof stdout === "string" ? stdout : stdout.toString(),
+        stderr: typeof stderr === "string" ? stderr : stderr.toString(),
+      });
+    });
+  });
+}
+
+function isAbortLikeError(error: unknown) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return (
+    error.name === "AbortError" ||
+    error.name === "PlanImportCancelledError" ||
+    error.message.includes("aborted") ||
+    error.message.includes("The operation was aborted")
+  );
+}
+
+function serializeImportError(error: unknown) {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+    };
+  }
+
+  return {
+    message: String(error),
+  };
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+) {
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+}
+
+function groupSpatialRows(entries: MesaSillaPair[], tolerance = 28) {
+  const sorted = [...entries]
+    .filter((entry) => typeof entry.x === "number" && typeof entry.y === "number")
+    .sort((a, b) =>
+      Math.abs((a.y ?? 0) - (b.y ?? 0)) < tolerance
+        ? (a.x ?? 0) - (b.x ?? 0)
+        : (a.y ?? 0) - (b.y ?? 0),
+    );
+  const rows: MesaSillaPair[][] = [];
+
+  for (const entry of sorted) {
+    const currentRow = rows[rows.length - 1];
+    if (!currentRow) {
+      rows.push([entry]);
+      continue;
+    }
+
+    const averageY =
+      currentRow.reduce((sum, rowEntry) => sum + (rowEntry.y ?? 0), 0) / currentRow.length;
+    if (Math.abs((entry.y ?? 0) - averageY) <= tolerance) {
+      currentRow.push(entry);
+      continue;
+    }
+
+    rows.push([entry]);
+  }
+
+  return rows.map((row) => row.sort((a, b) => (a.x ?? 0) - (b.x ?? 0)));
+}
+
+function mergeNearbyRowEntries(row: MesaSillaPair[], minGap = 32) {
+  const merged: MesaSillaPair[] = [];
+
+  for (const entry of row) {
+    const previous = merged[merged.length - 1];
+    if (
+      previous &&
+      typeof previous.x === "number" &&
+      typeof entry.x === "number" &&
+      Math.abs(entry.x - previous.x) <= minGap
+    ) {
+      previous.x = (previous.x + entry.x) / 2;
+      previous.y =
+        typeof previous.y === "number" && typeof entry.y === "number"
+          ? (previous.y + entry.y) / 2
+          : previous.y ?? entry.y;
+      continue;
+    }
+
+    merged.push({ ...entry });
+  }
+
+  return merged;
+}
+
+function inferGridColumnCount(rows: MesaSillaPair[][]) {
+  const counts = new Map<number, number>();
+  for (const row of rows) {
+    counts.set(row.length, (counts.get(row.length) ?? 0) + 1);
+  }
+
+  const best = [...counts.entries()].sort((a, b) =>
+    b[1] === a[1] ? b[0] - a[0] : b[1] - a[1],
+  )[0];
+
+  return clamp(best?.[0] ?? 0, 3, 16);
+}
+
+function inferGlobalColumnCenters(rows: MesaSillaPair[][], columnCount: number) {
+  const samples = rows
+    .filter((row) => row.length > 0)
+    .flatMap((row) =>
+      row.map((entry) => ({
+        x: entry.x ?? 0,
+        ratio:
+          row.length === 1 ? 0 : row.indexOf(entry) / Math.max(1, row.length - 1),
+      })),
+    );
+
+  if (samples.length === 0) {
+    return [] as number[];
+  }
+
+  const minX = Math.min(...samples.map((sample) => sample.x));
+  const maxX = Math.max(...samples.map((sample) => sample.x));
+  const initialCenters = Array.from({ length: columnCount }, (_, index) =>
+    lerp(minX, maxX, columnCount === 1 ? 0 : index / Math.max(1, columnCount - 1)),
+  );
+
+  let centers = initialCenters;
+  for (let iteration = 0; iteration < 6; iteration += 1) {
+    const buckets = centers.map(() => [] as number[]);
+
+    for (const sample of samples) {
+      let bestIndex = 0;
+      let bestDistance = Number.POSITIVE_INFINITY;
+
+      for (let index = 0; index < centers.length; index += 1) {
+        const distance = Math.abs(sample.x - centers[index]);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestIndex = index;
+        }
+      }
+
+      buckets[bestIndex].push(sample.x);
+    }
+
+    centers = centers.map((center, index) =>
+      buckets[index].length > 0
+        ? buckets[index].reduce((sum, value) => sum + value, 0) / buckets[index].length
+        : center,
+    );
+  }
+
+  return centers.sort((a, b) => a - b);
+}
+
+function normalizeRowsToColumnGrid(rows: MesaSillaPair[][], columnCenters: number[]) {
+  return rows.map((row) => {
+    const averageY =
+      row.reduce((sum, entry) => sum + (entry.y ?? 0), 0) / Math.max(1, row.length);
+    const assigned = new Map<number, MesaSillaPair>();
+
+    for (const entry of row) {
+      const x = entry.x ?? 0;
+      let bestIndex = 0;
+      let bestDistance = Number.POSITIVE_INFINITY;
+
+      for (let index = 0; index < columnCenters.length; index += 1) {
+        const distance = Math.abs(x - columnCenters[index]);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestIndex = index;
+        }
+      }
+
+      const existing = assigned.get(bestIndex);
+      if (!existing || bestDistance < Math.abs((existing.x ?? 0) - columnCenters[bestIndex])) {
+        assigned.set(bestIndex, {
+          ...entry,
+          x: columnCenters[bestIndex],
+          y: averageY,
+        });
+      }
+    }
+
+    return columnCenters.map((columnX, index) => {
+      const assignedEntry = assigned.get(index);
+      return assignedEntry
+        ? assignedEntry
+        : {
+            numero: index + 1,
+            chairCount: 8,
+            x: columnX,
+            y: averageY,
+          };
+    });
+  });
+}
+
+function getGeometryBounds(entries: MesaSillaPair[], padding = 90) {
+  const positioned = entries.filter(
+    (entry): entry is MesaSillaPair & { x: number; y: number } =>
+      typeof entry.x === "number" && typeof entry.y === "number",
+  );
+
+  if (positioned.length === 0) {
+    return null;
+  }
+
+  return {
+    minX: Math.max(0, Math.floor(Math.min(...positioned.map((entry) => entry.x)) - padding)),
+    minY: Math.max(0, Math.floor(Math.min(...positioned.map((entry) => entry.y)) - padding)),
+    maxX: Math.ceil(Math.max(...positioned.map((entry) => entry.x)) + padding),
+    maxY: Math.ceil(Math.max(...positioned.map((entry) => entry.y)) + padding),
+  };
+}
+
+function mergeGeometryWithOrderedLabels(
+  geometryEntries: MesaSillaPair[],
+  orderedLabels: AiOrderedPlanTable[],
+) {
+  const orderedGeometry = sortEntriesBySpatialOrder(geometryEntries);
+  const limit = Math.min(orderedGeometry.length, orderedLabels.length);
+  const merged: MesaSillaPair[] = [];
+
+  for (let index = 0; index < limit; index += 1) {
+    const geometryEntry = orderedGeometry[index];
+    const labelEntry = orderedLabels[index];
+    merged.push({
+      numero: labelEntry.numero,
+      chairCount: labelEntry.chairCount,
+      x: geometryEntry.x,
+      y: geometryEntry.y,
+    });
+  }
+
+  return merged;
+}
+
+function getChairTotal(entries: Array<Pick<MesaSillaPair, "chairCount">>) {
+  return entries.reduce((sum, entry) => sum + entry.chairCount, 0);
+}
+
+async function runPaddlePlanCropOcr(
+  buffer: Buffer,
+  cropRegions: Array<CropRegion & { index: number }>,
+  debugContext?: PlanImportDebugContext,
+) {
+  assertImportNotCancelled(debugContext);
+  const signal = getImportAbortSignal(debugContext);
+  const scriptPath = path.resolve(process.cwd(), "scripts", "paddle-plan-ocr.py");
+  const tempDir = path.resolve(process.cwd(), ".tmp-plan-import");
+  const baseName = `paddle-${debugContext?.traceId ?? randomUUID()}`;
+  const imagePath = path.join(tempDir, `${baseName}.png`);
+  const regionsPath = path.join(tempDir, `${baseName}.regions.json`);
+
+  await fs.mkdir(tempDir, { recursive: true });
+  await fs.writeFile(imagePath, buffer);
+  await fs.writeFile(regionsPath, JSON.stringify(cropRegions), "utf8");
+
+    try {
+      logPlanImport(debugContext, "image.paddle.started", {
+        total: cropRegions.length,
+      });
+      const { stdout, stderr } = await execFileWithImportAbort(
+        PADDLE_PYTHON_PATH,
+        [scriptPath, imagePath, regionsPath],
+        {
+          timeout: PADDLE_PLAN_OCR_TIMEOUT_MS,
+          maxBuffer: 8 * 1024 * 1024,
+          signal,
+          env: {
+            ...process.env,
+            PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK: "True",
+          },
+        },
+      );
+    assertImportNotCancelled(debugContext);
+
+    if (stderr?.trim()) {
+      logPlanImport(debugContext, "image.paddle.stderr", {
+        message: stderr.trim().slice(-1200),
+      });
+    }
+
+    const parsed = JSON.parse(stdout) as { results?: PaddleOcrCropResult[] };
+      logPlanImport(debugContext, "image.paddle.completed", {
+        total: Array.isArray(parsed.results) ? parsed.results.length : 0,
+      });
+      return Array.isArray(parsed.results) ? parsed.results : [];
+    } catch (error) {
+      if (isAbortLikeError(error)) {
+        throw new PlanImportCancelledError();
+      }
+
+      throw error;
+    } finally {
+      await Promise.allSettled([
+        fs.unlink(imagePath),
+      fs.unlink(regionsPath),
+    ]);
+  }
+}
+
+async function runAdvancedPlanVision(
+  buffer: Buffer,
+  hints: PlanImportHints | undefined,
+  debugContext?: PlanImportDebugContext,
+) {
+  assertImportNotCancelled(debugContext);
+  const signal = getImportAbortSignal(debugContext);
+  const scriptPath = path.resolve(process.cwd(), "scripts", "detect-plan-layout-advanced.py");
+  const tempDir = path.resolve(process.cwd(), ".tmp-plan-import");
+  const baseName = `advanced-${debugContext?.traceId ?? randomUUID()}`;
+  const imagePath = path.join(tempDir, `${baseName}.png`);
+  const hintsPath = path.join(tempDir, `${baseName}.hints.json`);
+
+  await fs.mkdir(tempDir, { recursive: true });
+  await fs.writeFile(imagePath, buffer);
+  await fs.writeFile(hintsPath, JSON.stringify(hints ?? {}), "utf8");
+
+    try {
+      logPlanImport(debugContext, "image.advanced.started");
+      const { stdout, stderr } = await execFileWithImportAbort(
+        PADDLE_PYTHON_PATH,
+        [scriptPath, imagePath, hintsPath],
+        {
+          timeout: IMAGE_ADVANCED_VISION_TIMEOUT_MS,
+          maxBuffer: 10 * 1024 * 1024,
+          signal,
+          env: {
+            ...process.env,
+            PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK: "True",
+            ULTRALYTICS_CONFIG_DIR: path.resolve(process.cwd(), ".ultralytics"),
+          },
+      },
+    );
+    assertImportNotCancelled(debugContext);
+
+    if (stderr?.trim()) {
+      logPlanImport(debugContext, "image.advanced.stderr", {
+        message: stderr.trim().slice(-1200),
+      });
+    }
+
+    const parsed = JSON.parse(stdout) as {
+      tables?: Array<{ numero?: number; chairCount?: number; x?: number; y?: number }>;
+      meta?: Record<string, unknown>;
+    };
+
+    const tables = Array.isArray(parsed.tables)
+      ? parsed.tables
+          .filter(
+            (table): table is { numero: number; chairCount: number; x: number; y: number } =>
+              Number.isInteger(table?.numero) &&
+              Number.isInteger(table?.chairCount) &&
+              typeof table?.x === "number" &&
+              typeof table?.y === "number",
+          )
+          .map((table) => ({
+            numero: table.numero,
+            chairCount: table.chairCount,
+            x: table.x,
+            y: table.y,
+          }))
+      : [];
+
+    const width =
+      typeof parsed.meta?.imageWidth === "number" ? Number(parsed.meta.imageWidth) : null;
+    const height =
+      typeof parsed.meta?.imageHeight === "number" ? Number(parsed.meta.imageHeight) : null;
+
+    logPlanImport(debugContext, "image.advanced.completed", {
+      tableCount: tables.length,
+      ...(parsed.meta ?? {}),
+    });
+
+      return {
+        tables,
+        sourceBounds:
+        width && height
+          ? {
+              width,
+              height,
+            }
+          : null,
+        meta: parsed.meta,
+      } satisfies AdvancedVisionLayoutResult;
+    } catch (error) {
+      if (isAbortLikeError(error)) {
+        throw new PlanImportCancelledError();
+      }
+
+      throw error;
+    } finally {
+      await Promise.allSettled([fs.unlink(imagePath), fs.unlink(hintsPath)]);
+    }
+}
+
+function chooseChairCountsClosestToTarget(
+  entries: MesaSillaPair[],
+  chairCandidatesByIndex: number[][],
+  expectedChairTotal?: number,
+) {
+  if (
+    !Number.isInteger(expectedChairTotal) ||
+    !Array.isArray(chairCandidatesByIndex) ||
+    chairCandidatesByIndex.length !== entries.length
+  ) {
+    return entries;
+  }
+  const targetChairTotal = expectedChairTotal!;
+
+  type CandidateState = {
+    score: number;
+    counts: number[];
+  };
+
+  let states = new Map<number, CandidateState>();
+  states.set(0, { score: 0, counts: [] });
+
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    const rawCandidates = chairCandidatesByIndex[index] ?? [];
+    const candidates = [...new Set(rawCandidates)].filter(
+      (value) => Number.isInteger(value) && value >= 2 && value <= 16,
+    );
+
+    if (candidates.length === 0) {
+      candidates.push(entry.chairCount);
+    }
+
+    const nextStates = new Map<number, CandidateState>();
+
+    for (const [partialTotal, state] of states.entries()) {
+      for (const candidate of candidates) {
+        const nextTotal = partialTotal + candidate;
+        const penalty =
+          Math.abs(candidate - entry.chairCount) * 4 +
+          (candidate === entry.chairCount ? 0 : 1);
+        const nextScore = state.score + penalty;
+        const previous = nextStates.get(nextTotal);
+
+        if (!previous || nextScore < previous.score) {
+          nextStates.set(nextTotal, {
+            score: nextScore,
+            counts: [...state.counts, candidate],
+          });
+        }
+      }
+    }
+
+    states = nextStates;
+  }
+
+  let bestState: CandidateState | null = null;
+  let bestTotal: number | null = null;
+
+  for (const [total, state] of states.entries()) {
+    if (
+      !bestState ||
+      Math.abs(total - targetChairTotal) < Math.abs((bestTotal ?? 0) - targetChairTotal) ||
+      (Math.abs(total - targetChairTotal) === Math.abs((bestTotal ?? 0) - targetChairTotal) &&
+        state.score < bestState.score)
+    ) {
+      bestState = state;
+      bestTotal = total;
+    }
+  }
+
+  if (!bestState || bestState.counts.length !== entries.length) {
+    return entries;
+  }
+
+  return entries.map((entry, index) => ({
+    ...entry,
+    chairCount: bestState!.counts[index],
+  }));
+}
+
+function serializeOrderedLabels(entries: AiOrderedPlanTable[]) {
+  return entries.map((entry, index) => `${index + 1}. M:${entry.numero} S:${entry.chairCount}`).join("\n");
+}
+
+function scoreOrderedLabelCandidate(
+  entries: AiOrderedPlanTable[] | null | undefined,
+  hints: PlanImportHints | undefined,
+  geometryTableCount: number,
+) {
+  if (!entries || entries.length === 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const expectedTableCount = hints?.expectedTableCount ?? geometryTableCount;
+  const expectedChairTotal = hints?.expectedChairTotal;
+  const tablePenalty = Math.abs(entries.length - expectedTableCount) * 1000;
+  const chairPenalty =
+    typeof expectedChairTotal === "number"
+      ? Math.abs(getChairTotal(entries) - expectedChairTotal) * 25
+      : 0;
+
+  return tablePenalty + chairPenalty;
+}
+
+function applyHintGridLayout(entries: MesaSillaPair[], hints?: PlanImportHints) {
+  if (
+    !hints?.expectedRowCount ||
+    !hints?.expectedColumnCount ||
+    hints.expectedRowCount <= 0 ||
+    hints.expectedColumnCount <= 0
+  ) {
+    return entries;
+  }
+
+  const orderedEntries = sortEntriesBySpatialOrder(entries);
+  const maxEntries = hints.expectedRowCount * hints.expectedColumnCount;
+  const effectiveEntries = orderedEntries.slice(0, maxEntries);
+  const density = clamp(Math.sqrt(effectiveEntries.length / 18), 0.42, 1);
+  const maxTableSpan = effectiveEntries.reduce((maxSpan, entry) => {
+    const dimensions = getTableDimensions(entry.chairCount);
+    return Math.max(maxSpan, dimensions.height + dimensions.chairOffset * 2 + 34);
+  }, 260);
+  const widthCompactness =
+    effectiveEntries.length <= 8 ? 0.44 : effectiveEntries.length <= 18 ? 0.58 : lerp(0.68, 0.8, density);
+  const heightCompactness =
+    effectiveEntries.length <= 8 ? 0.26 : effectiveEntries.length <= 18 ? 0.4 : lerp(0.48, 0.62, density);
+  const usableWidth = ROOM_LAYOUT_WIDTH * widthCompactness;
+  const usableHeight = ROOM_LAYOUT_HEIGHT * heightCompactness;
+  const centerX = ROOM_LAYOUT_WIDTH / 2;
+  const centerY = ROOM_LAYOUT_HEIGHT / 2;
+  const titleFootprint = hints.eventName
+    ? getEventTitleFootprint(hints.eventName, ROOM_LAYOUT_WIDTH, ROOM_LAYOUT_HEIGHT)
+    : null;
+  const columnStep =
+    hints.expectedColumnCount > 1 ? usableWidth / (hints.expectedColumnCount - 1) : 0;
+  const rowStepBase =
+    hints.expectedRowCount > 1
+      ? Math.min(330, Math.max(150, usableHeight / (hints.expectedRowCount - 1)))
+      : 0;
+
+  const columnPositions = Array.from(
+    { length: hints.expectedColumnCount },
+    (_, index) =>
+      hints.expectedColumnCount === 1
+        ? centerX
+        : Math.round(centerX - usableWidth / 2 + columnStep * index),
+  );
+
+  let rowPositions: number[];
+  if (hints.expectedRowCount === 1) {
+    rowPositions = [centerY];
+  } else if (hints.expectedRowCount === 2) {
+    const pairHalfGap = Math.max(120, rowStepBase * 0.48);
+    rowPositions = [
+      Math.round(centerY - pairHalfGap),
+      Math.round(centerY + pairHalfGap),
+    ];
+  } else {
+    const topRows = Math.floor(hints.expectedRowCount / 2);
+    const bottomRows = hints.expectedRowCount - topRows;
+    const columnDensity =
+      hints.expectedColumnCount >= 7
+        ? 1
+        : hints.expectedColumnCount >= 6
+          ? 0.84
+          : hints.expectedColumnCount >= 4
+            ? 0.72
+            : 0.62;
+    const centerGapBias =
+      (hints.expectedRowCount >= 6 ? 0.22 : hints.expectedRowCount >= 4 ? 0.32 : 0.46) *
+      columnDensity;
+    const reservedCenterHeight = titleFootprint
+      ? titleFootprint.safeHeight + maxTableSpan * centerGapBias + 10
+      : maxTableSpan + 96;
+    const titleGap = clamp(
+      reservedCenterHeight,
+      rowStepBase * 0.46,
+      Math.max(rowStepBase * 0.92, reservedCenterHeight),
+    );
+    const topStart = centerY - titleGap / 2 - rowStepBase * Math.max(0, topRows - 1);
+    const bottomStart = centerY + titleGap / 2;
+    rowPositions = [
+      ...Array.from({ length: topRows }, (_, index) =>
+        Math.round(topStart + rowStepBase * index),
+      ),
+      ...Array.from({ length: bottomRows }, (_, index) =>
+        Math.round(bottomStart + rowStepBase * index),
+      ),
+    ];
+  }
+
+  return effectiveEntries.map((entry, index) => {
+    const rowIndex = Math.floor(index / hints.expectedColumnCount!);
+    const columnIndex = index % hints.expectedColumnCount!;
+
+    return {
+      ...entry,
+      x: columnPositions[columnIndex] ?? centerX,
+      y: rowPositions[rowIndex] ?? centerY,
+    };
+  });
+}
 
 function normalizeText(text: string) {
   return text
@@ -68,6 +860,14 @@ function normalizeText(text: string) {
     .replace(/[ \t]+/g, " ")
     .replace(/\n{2,}/g, "\n")
     .trim();
+}
+
+function getOpenAIApiKey() {
+  return process.env.OPENAI_API_KEY?.trim() || "";
+}
+
+function canUseOpenAIImporter() {
+  return getOpenAIApiKey().length > 0;
 }
 
 function parseNumericDimension(value: string | undefined) {
@@ -152,8 +952,38 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
+function clampCropRegion(region: CropRegion, maxWidth: number, maxHeight: number) {
+  const x = clamp(region.x, 0, Math.max(0, maxWidth - 1));
+  const y = clamp(region.y, 0, Math.max(0, maxHeight - 1));
+  const width = clamp(region.width, 1, Math.max(1, maxWidth - x));
+  const height = clamp(region.height, 1, Math.max(1, maxHeight - y));
+
+  return { x, y, width, height } satisfies CropRegion;
+}
+
 function lerp(start: number, end: number, amount: number) {
   return start + (end - start) * amount;
+}
+
+function median(values: number[]) {
+  if (values.length === 0) {
+    return 0;
+  }
+
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+
+  return sorted.length % 2 === 0
+    ? (sorted[middle - 1] + sorted[middle]) / 2
+    : sorted[middle];
+}
+
+function parseJsonSafe<T>(value: string): T | null {
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return null;
+  }
 }
 
 function getContentBounds(entries: MesaSillaPair[]) {
@@ -287,12 +1117,1139 @@ function regularizeSpatialEntries(entries: MesaSillaPair[]) {
   return normalizedEntries;
 }
 
+function hasReliableSpatialLayout(entries: MesaSillaPair[]) {
+  const positionedEntries = entries.filter(
+    (entry) => typeof entry.x === "number" && typeof entry.y === "number",
+  ) as Array<MesaSillaPair & { x: number; y: number }>;
+
+  if (positionedEntries.length === 0) {
+    return false;
+  }
+
+  const bounds = getContentBounds(positionedEntries);
+  const spanX = Math.max(0, (bounds?.maxX ?? 0) - (bounds?.minX ?? 0));
+  const spanY = Math.max(0, (bounds?.maxY ?? 0) - (bounds?.minY ?? 0));
+  const rowCount = groupEntriesIntoRows(positionedEntries).length;
+
+  if (positionedEntries.length >= 8 && spanY < 60) {
+    return false;
+  }
+
+  if (positionedEntries.length >= 12 && rowCount < 2) {
+    return false;
+  }
+
+  if (positionedEntries.length >= 24 && rowCount < 3) {
+    return false;
+  }
+
+  return spanX > 0;
+}
+
+function mergeSpatialAndAiEntries(
+  spatialEntries: MesaSillaPair[],
+  aiEntries: MesaSillaPair[],
+) {
+  const spatialByMesa = new Map(spatialEntries.map((entry) => [entry.numero, entry]));
+  const merged: MesaSillaPair[] = spatialEntries.map((entry) => {
+    const aiEntry = aiEntries.find((candidate) => candidate.numero === entry.numero);
+
+    return {
+      ...entry,
+      chairCount: aiEntry?.chairCount ?? entry.chairCount,
+    };
+  });
+
+  for (const aiEntry of aiEntries) {
+    if (!spatialByMesa.has(aiEntry.numero)) {
+      merged.push(aiEntry);
+    }
+  }
+
+  return merged;
+}
+
+function shouldUseAiCountsForImage(
+  spatialEntries: MesaSillaPair[],
+  aiEntries: MesaSillaPair[],
+) {
+  if (spatialEntries.length === 0 || aiEntries.length === 0) {
+    return false;
+  }
+
+  const overlappingMesaNumbers = spatialEntries.filter((entry) =>
+    aiEntries.some((candidate) => candidate.numero === entry.numero),
+  );
+
+  if (overlappingMesaNumbers.length < Math.max(4, Math.floor(spatialEntries.length * 0.35))) {
+    return false;
+  }
+
+  const aiChairCounts = aiEntries
+    .map((entry) => entry.chairCount)
+    .filter((value) => Number.isInteger(value) && value > 0);
+  const spatialChairCounts = spatialEntries
+    .map((entry) => entry.chairCount)
+    .filter((value) => Number.isInteger(value) && value > 0);
+  const aiDistinctChairCounts = new Set(aiChairCounts);
+  const spatialDistinctChairCounts = new Set(spatialChairCounts);
+
+  if (aiDistinctChairCounts.size === 1 && spatialDistinctChairCounts.size > 1) {
+    return false;
+  }
+
+  return true;
+}
+
+function shouldPreferAiLayoutForImage(
+  spatialEntries: MesaSillaPair[],
+  aiEntries: MesaSillaPair[],
+) {
+  if (aiEntries.length === 0) {
+    return false;
+  }
+
+  if (spatialEntries.length === 0) {
+    return true;
+  }
+
+  if (aiEntries.length >= Math.max(spatialEntries.length + 8, Math.ceil(spatialEntries.length * 1.8))) {
+    return true;
+  }
+
+  if (!hasReliableSpatialLayout(spatialEntries) && aiEntries.length >= spatialEntries.length + 4) {
+    return true;
+  }
+
+  return false;
+}
+
+function estimateNearestNeighborDistance(entries: MesaSillaPair[]) {
+  const positionedEntries = entries.filter(
+    (entry) => typeof entry.x === "number" && typeof entry.y === "number",
+  ) as Array<MesaSillaPair & { x: number; y: number }>;
+
+  if (positionedEntries.length < 2) {
+    return 0;
+  }
+
+  const distances = positionedEntries.map((entry, index) => {
+    let best = Number.POSITIVE_INFINITY;
+
+    for (let candidateIndex = 0; candidateIndex < positionedEntries.length; candidateIndex += 1) {
+      if (candidateIndex === index) {
+        continue;
+      }
+
+      const candidate = positionedEntries[candidateIndex];
+      const distance = Math.hypot(candidate.x - entry.x, candidate.y - entry.y);
+      if (distance < best) {
+        best = distance;
+      }
+    }
+
+    return best;
+  }).filter((value) => Number.isFinite(value) && value > 0);
+
+  return median(distances);
+}
+
+function dedupeOcrTokens(tokens: OcrToken[]) {
+  const sorted = [...tokens].sort((a, b) => b.confidence - a.confidence);
+  const deduped: OcrToken[] = [];
+
+  for (const token of sorted) {
+    const duplicate = deduped.some((candidate) => {
+      if (candidate.kind !== token.kind || candidate.value !== token.value) {
+        return false;
+      }
+
+      return Math.abs(candidate.x - token.x) <= 28 && Math.abs(candidate.y - token.y) <= 24;
+    });
+
+    if (!duplicate) {
+      deduped.push(token);
+    }
+  }
+
+  return deduped.sort((a, b) => (Math.abs(a.y - b.y) < 18 ? a.x - b.x : a.y - b.y));
+}
+
+function sortEntriesBySpatialOrder(entries: MesaSillaPair[]) {
+  const positionedEntries = entries.filter(
+    (entry) => typeof entry.x === "number" && typeof entry.y === "number",
+  ) as Array<MesaSillaPair & { x: number; y: number }>;
+
+  if (positionedEntries.length === 0) {
+    return [...entries];
+  }
+
+  return groupEntriesIntoRows(positionedEntries).flat();
+}
+
+function mergeAiLayoutWithOrderedLabels(
+  aiEntries: MesaSillaPair[],
+  orderedLabelEntries: MesaSillaPair[],
+) {
+  if (aiEntries.length === 0 || orderedLabelEntries.length === 0) {
+    return aiEntries;
+  }
+
+  if (orderedLabelEntries.length < Math.max(12, Math.floor(aiEntries.length * 0.7))) {
+    return aiEntries;
+  }
+
+  const aiSorted = sortEntriesBySpatialOrder(aiEntries);
+  const labelSorted = sortEntriesBySpatialOrder(orderedLabelEntries);
+
+  return aiSorted.map((entry, index) => {
+    const labelEntry = labelSorted[index];
+
+    if (!labelEntry) {
+      return entry;
+    }
+
+    return {
+      ...entry,
+      numero: labelEntry.numero,
+      chairCount: labelEntry.chairCount,
+    };
+  });
+}
+
+async function detectTableLayoutFromImageGeometry(
+  buffer: Buffer,
+  debugContext?: PlanImportDebugContext,
+) {
+  assertImportNotCancelled(debugContext);
+  logPlanImport(debugContext, "image.geometry.started");
+  const metadata = await sharp(buffer).metadata();
+  const originalWidth = metadata.width ?? 0;
+  const originalHeight = metadata.height ?? 0;
+  const resizedWidth = Math.min(1400, Math.max(1, originalWidth || 1400));
+  const { data, info } = await sharp(buffer)
+    .resize({ width: resizedWidth })
+    .greyscale()
+    .threshold(180)
+    .negate()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const width = info.width;
+  const height = info.height;
+  const visited = new Uint8Array(width * height);
+  const queue = new Int32Array(width * height);
+  const candidates: Array<{ x: number; y: number; area: number; width: number; height: number }> = [];
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const startIndex = y * width + x;
+      if (visited[startIndex] || data[startIndex] === 0) {
+        continue;
+      }
+
+      visited[startIndex] = 1;
+      let head = 0;
+      let tail = 0;
+      queue[tail] = startIndex;
+      tail += 1;
+      let minX = x;
+      let maxX = x;
+      let minY = y;
+      let maxY = y;
+      let area = 0;
+
+      while (head < tail) {
+        const currentIndex = queue[head];
+        head += 1;
+        const currentX = currentIndex % width;
+        const currentY = Math.floor(currentIndex / width);
+        area += 1;
+        minX = Math.min(minX, currentX);
+        maxX = Math.max(maxX, currentX);
+        minY = Math.min(minY, currentY);
+        maxY = Math.max(maxY, currentY);
+
+        if (currentX + 1 < width) {
+          const right = currentIndex + 1;
+          if (!visited[right] && data[right] !== 0) {
+            visited[right] = 1;
+            queue[tail] = right;
+            tail += 1;
+          }
+        }
+
+        if (currentX - 1 >= 0) {
+          const left = currentIndex - 1;
+          if (!visited[left] && data[left] !== 0) {
+            visited[left] = 1;
+            queue[tail] = left;
+            tail += 1;
+          }
+        }
+
+        if (currentY + 1 < height) {
+          const down = currentIndex + width;
+          if (!visited[down] && data[down] !== 0) {
+            visited[down] = 1;
+            queue[tail] = down;
+            tail += 1;
+          }
+        }
+
+        if (currentY - 1 >= 0) {
+          const up = currentIndex - width;
+          if (!visited[up] && data[up] !== 0) {
+            visited[up] = 1;
+            queue[tail] = up;
+            tail += 1;
+          }
+        }
+      }
+
+      const boxWidth = maxX - minX + 1;
+      const boxHeight = maxY - minY + 1;
+      const ratio = boxWidth / Math.max(1, boxHeight);
+
+      if (
+        area < 350 ||
+        area > 1300 ||
+        boxWidth < 45 ||
+        boxHeight < 45 ||
+        boxWidth > 95 ||
+        boxHeight > 95 ||
+        ratio < 0.8 ||
+        ratio > 1.2
+      ) {
+        continue;
+      }
+
+      candidates.push({
+        x: minX + boxWidth / 2,
+        y: minY + boxHeight / 2,
+        area,
+        width: boxWidth,
+        height: boxHeight,
+      });
+    }
+  }
+
+  const groupedRows = groupSpatialRows(
+    candidates.map((candidate, index) => ({
+      numero: index + 1,
+      chairCount: 8,
+      x: candidate.x,
+      y: candidate.y,
+    })),
+    28,
+  )
+    .filter((row) => row.length >= 3)
+    .map((row) => mergeNearbyRowEntries(row, 32));
+
+  const columnCount = inferGridColumnCount(groupedRows);
+  const columnCenters = inferGlobalColumnCenters(groupedRows, columnCount);
+  const normalizedRows = normalizeRowsToColumnGrid(groupedRows, columnCenters);
+  const flattened = normalizedRows.flat();
+  const scaleX = originalWidth / Math.max(1, width);
+  const scaleY = originalHeight / Math.max(1, height);
+  const nearestDistance = estimateNearestNeighborDistance(
+    flattened.map((entry) => ({
+      ...entry,
+      x: entry.x ? entry.x * scaleX : entry.x,
+      y: entry.y ? entry.y * scaleY : entry.y,
+    })),
+  );
+
+  logPlanImport(debugContext, "image.geometry.completed", {
+    rawCandidates: candidates.length,
+    rowLengths: normalizedRows.map((row) => row.length),
+    inferredColumns: columnCount,
+    finalTables: flattened.length,
+  });
+
+  return {
+    tables: flattened.map((entry, index) => ({
+      numero: index + 1,
+      chairCount: 8,
+      x: typeof entry.x === "number" ? Math.round(entry.x * scaleX) : undefined,
+      y: typeof entry.y === "number" ? Math.round(entry.y * scaleY) : undefined,
+    })),
+    sourceBounds: {
+      width: originalWidth,
+      height: originalHeight,
+      preferRegularized: true,
+    },
+    nearestDistance,
+  } satisfies DetectedImageLayout;
+}
+
+async function readSingleMesaLabelFromCrop(
+  worker: OcrWorkerLike,
+  croppedBuffer: Buffer,
+) {
+  const variants = await createOcrVariants(croppedBuffer, { mode: "crop" });
+  let bestPair: MesaSillaPair | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  for (const variant of variants.slice(0, 2)) {
+    const result = await runOcrVariantBuffer(worker, variant);
+    const candidate = result.pairs[0] ?? result.textFallback[0] ?? null;
+    if (!candidate) {
+      continue;
+    }
+
+    if (
+      !Number.isInteger(candidate.numero) ||
+      candidate.numero <= 0 ||
+      !Number.isInteger(candidate.chairCount) ||
+      candidate.chairCount < 2 ||
+      candidate.chairCount > 16
+    ) {
+      continue;
+    }
+
+    if (result.score > bestScore) {
+      bestScore = result.score;
+      bestPair = candidate;
+    }
+  }
+
+  return bestPair;
+}
+
+async function readChairCountFromCrop(
+  worker: OcrWorkerLike,
+  croppedBuffer: Buffer,
+) {
+  const image = await Jimp.read(croppedBuffer);
+  const lowerRegionY = Math.max(0, Math.floor(image.bitmap.height * 0.42));
+  const lowerRegionHeight = Math.max(24, image.bitmap.height - lowerRegionY);
+  const lowerRegion = image.clone().crop({
+    x: 0,
+    y: lowerRegionY,
+    w: image.bitmap.width,
+    h: lowerRegionHeight,
+  });
+
+  const variants = [
+    lowerRegion.clone().greyscale().contrast(0.95).normalize().scale(4),
+    lowerRegion.clone().greyscale().contrast(1).normalize().scale(5).threshold({ max: 178 }),
+    lowerRegion.clone().greyscale().contrast(1).normalize().scale(6).threshold({ max: 165 }),
+  ];
+
+  let bestCount: number | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  for (const variant of variants) {
+    const variantBuffer = Buffer.from(await variant.getBuffer("image/png"));
+    const result = await worker.recognize(
+      variantBuffer,
+      {},
+      { hocr: true, text: true },
+    );
+    const rawText = normalizeText(String(result.data.text ?? ""))
+      .toUpperCase()
+      .replace(/\s+/g, "")
+      .replace(/[;,_]/g, ":");
+    const chairToken =
+      rawText.match(/S[:=-]?(\d{1,2})/)?.[1] ??
+      rawText.match(/(?:^|[^0-9])(\d{1,2})(?:[^0-9]|$)/)?.[1] ??
+      "";
+    const chairCount = Number(chairToken);
+
+    if (!Number.isInteger(chairCount) || chairCount < 2 || chairCount > 16) {
+      continue;
+    }
+
+    const score =
+      (rawText.includes("S:") || rawText.includes("S")) ? 100 : 0 +
+      (chairCount >= 4 && chairCount <= 12 ? 30 : 0) +
+      variant.bitmap.width * 0.001;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestCount = chairCount;
+    }
+  }
+
+  return bestCount;
+}
+
+async function readLabelsFromDetectedImageLayout(
+  buffer: Buffer,
+  layout: DetectedImageLayout,
+  debugContext?: PlanImportDebugContext,
+) {
+  assertImportNotCancelled(debugContext);
+  logPlanImport(debugContext, "image.geometry_ocr.bootstrap");
+  const tesseractModule = await import("tesseract.js");
+  const tesseract = tesseractModule.default ?? tesseractModule;
+  const worker = await tesseract.createWorker("eng", 1, {
+    workerPath: path.resolve(
+      process.cwd(),
+      "node_modules",
+      "tesseract.js",
+      "src",
+      "worker-script",
+      "node",
+      "index.js",
+    ),
+    logger: () => {},
+    cacheMethod: "none",
+  });
+
+  try {
+    await worker.setParameters({
+      tessedit_pageseg_mode: tesseract.PSM.SINGLE_BLOCK,
+      preserve_interword_spaces: "1",
+      user_defined_dpi: "300",
+      tessedit_char_whitelist: "MS:0123456789",
+    });
+
+    const orderedTables = sortEntriesBySpatialOrder(layout.tables);
+    const halfWidth = clamp(Math.round(layout.nearestDistance * 0.4), 65, 125);
+    const halfHeight = clamp(Math.round(layout.nearestDistance * 0.34), 55, 110);
+    const recognized: MesaSillaPair[] = [];
+    const usedNumbers = new Set<number>();
+
+    logPlanImport(debugContext, "image.geometry_ocr.started", {
+      total: orderedTables.length,
+      nearestDistance: layout.nearestDistance,
+      halfWidth,
+      halfHeight,
+    });
+
+    for (const [index, table] of orderedTables.entries()) {
+      assertImportNotCancelled(debugContext);
+      if (typeof table.x !== "number" || typeof table.y !== "number") {
+        continue;
+      }
+
+      const cropRegion = clampCropRegion(
+        {
+          x: table.x - halfWidth,
+          y: table.y - halfHeight,
+          width: halfWidth * 2,
+          height: halfHeight * 2,
+        },
+        layout.sourceBounds.width,
+        layout.sourceBounds.height,
+      );
+
+      const croppedBuffer = await cropBufferToRegion(buffer, cropRegion);
+      const candidate = await readSingleMesaLabelFromCrop(worker, croppedBuffer);
+
+      if (!candidate || usedNumbers.has(candidate.numero)) {
+        continue;
+      }
+
+      recognized.push({
+        numero: candidate.numero,
+        chairCount: candidate.chairCount,
+        x: table.x,
+        y: table.y,
+      });
+      usedNumbers.add(candidate.numero);
+
+      if ((index + 1) % 6 === 0 || index === orderedTables.length - 1) {
+        logPlanImport(debugContext, "image.geometry_ocr.progress", {
+          processed: index + 1,
+          total: orderedTables.length,
+          recognized: recognized.length,
+        });
+      }
+    }
+
+    logPlanImport(debugContext, "image.geometry_ocr.completed", {
+      recognized: recognized.length,
+      total: orderedTables.length,
+      nearestDistance: layout.nearestDistance,
+    });
+
+    return recognized;
+  } finally {
+    await worker.terminate();
+  }
+}
+
+async function recoverChairCountsFromGeometryLayout(
+  buffer: Buffer,
+  layout: DetectedImageLayout,
+  orderedEntries: MesaSillaPair[],
+  hints?: PlanImportHints,
+  debugContext?: PlanImportDebugContext,
+) {
+  assertImportNotCancelled(debugContext);
+  const orderedGeometry = sortEntriesBySpatialOrder(layout.tables).filter(
+    (entry): entry is MesaSillaPair & { x: number; y: number } =>
+      typeof entry.x === "number" && typeof entry.y === "number",
+  );
+  const limit = Math.min(orderedEntries.length, orderedGeometry.length);
+  const nearestDistance = Math.max(90, layout.nearestDistance || 110);
+  const halfWidth = clamp(Math.round(nearestDistance * 0.34), 58, 96);
+  const halfHeight = clamp(Math.round(nearestDistance * 0.28), 50, 82);
+
+  logPlanImport(debugContext, "image.chair_ocr.started", {
+    total: limit,
+    expectedChairTotal: hints?.expectedChairTotal ?? null,
+    halfWidth,
+    halfHeight,
+    engine: "paddleocr",
+  });
+
+  const cropRegions = orderedGeometry.slice(0, limit).map((geometryEntry, index) => ({
+    index,
+    ...clampCropRegion(
+      {
+        x: geometryEntry.x - halfWidth,
+        y: geometryEntry.y - halfHeight,
+        width: halfWidth * 2,
+        height: halfHeight * 2,
+      },
+      layout.sourceBounds.width,
+      layout.sourceBounds.height,
+    ),
+  }));
+
+  const paddleResults = await runPaddlePlanCropOcr(buffer, cropRegions, debugContext);
+  const resultsByIndex = new Map<number, PaddleOcrCropResult>();
+  for (const result of paddleResults) {
+    if (typeof result.index === "number") {
+      resultsByIndex.set(result.index, result);
+    }
+  }
+
+  const recoveredEntries: MesaSillaPair[] = [];
+  const chairCandidatesByIndex: number[][] = [];
+
+  for (let index = 0; index < limit; index += 1) {
+    assertImportNotCancelled(debugContext);
+    const entry = orderedEntries[index];
+    const result = resultsByIndex.get(index);
+    const numeroCandidates = Array.isArray(result?.numeroCandidates)
+      ? result!.numeroCandidates.filter((value) => Number.isInteger(value) && value > 0)
+      : [];
+    const sameMesaLikely =
+      !result?.numero ||
+      result.numero === entry.numero ||
+      numeroCandidates.includes(entry.numero);
+    const chairCandidates = [
+      entry.chairCount,
+      result?.chairCount ?? null,
+      ...(Array.isArray(result?.chairCandidates) ? result!.chairCandidates : []),
+    ].filter((value): value is number => typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 24);
+
+    const uniqueChairCandidates = [...new Set(chairCandidates)];
+    chairCandidatesByIndex.push(uniqueChairCandidates);
+
+    recoveredEntries.push({
+      ...entry,
+      chairCount:
+        sameMesaLikely &&
+        typeof result?.chairCount === "number" &&
+        Number.isInteger(result.chairCount) &&
+        result.chairCount >= 1 &&
+        result.chairCount <= 24
+          ? result.chairCount
+          : entry.chairCount,
+    });
+
+    if ((index + 1) % 6 === 0 || index === limit - 1) {
+      logPlanImport(debugContext, "image.chair_ocr.progress", {
+        processed: index + 1,
+        total: limit,
+      });
+    }
+  }
+
+  logPlanImport(debugContext, "image.chair_ocr.completed", {
+    total: recoveredEntries.length,
+    chairTotal: getChairTotal(recoveredEntries),
+  });
+
+  const normalizedRecoveredEntries = chooseChairCountsClosestToTarget(
+    recoveredEntries,
+    chairCandidatesByIndex,
+    hints?.expectedChairTotal,
+  );
+
+  logPlanImport(debugContext, "image.chair_ocr.normalized", {
+    total: normalizedRecoveredEntries.length,
+    chairTotal: getChairTotal(normalizedRecoveredEntries),
+  });
+
+  const candidates = [orderedEntries, recoveredEntries, normalizedRecoveredEntries];
+
+  return [...candidates].sort((a, b) => {
+    const expectedChairTotal = hints?.expectedChairTotal;
+    if (typeof expectedChairTotal !== "number") {
+      return Math.abs(getChairTotal(a) - getChairTotal(orderedEntries)) -
+        Math.abs(getChairTotal(b) - getChairTotal(orderedEntries));
+    }
+
+    return (
+      Math.abs(getChairTotal(a) - expectedChairTotal) -
+      Math.abs(getChairTotal(b) - expectedChairTotal)
+    );
+  })[0];
+}
+
+async function recoverMesaSillaLabelsFromAiLayout(
+  buffer: Buffer,
+  aiEntries: MesaSillaPair[],
+  aiSourceBounds: ImportSourceBounds | null | undefined,
+  debugContext?: PlanImportDebugContext,
+) {
+  if (!aiSourceBounds || aiEntries.length === 0) {
+    return aiEntries;
+  }
+  assertImportNotCancelled(debugContext);
+
+  const tesseractModule = await import("tesseract.js");
+  const tesseract = tesseractModule.default ?? tesseractModule;
+  const worker = await tesseract.createWorker("eng", 1, {
+    workerPath: path.resolve(
+      process.cwd(),
+      "node_modules",
+      "tesseract.js",
+      "src",
+      "worker-script",
+      "node",
+      "index.js",
+    ),
+    logger: () => {},
+    cacheMethod: "none",
+  });
+
+  try {
+    await worker.setParameters({
+      tessedit_pageseg_mode: tesseract.PSM.SINGLE_BLOCK,
+      preserve_interword_spaces: "1",
+      user_defined_dpi: "300",
+      tessedit_char_whitelist: "MS:0123456789",
+    });
+
+    const originalImage = await Jimp.read(buffer);
+    const originalWidth = originalImage.bitmap.width;
+    const originalHeight = originalImage.bitmap.height;
+    const nearestDistance = estimateNearestNeighborDistance(aiEntries);
+    const scaleX = originalWidth / Math.max(1, aiSourceBounds.width);
+    const scaleY = originalHeight / Math.max(1, aiSourceBounds.height);
+    const averageScale = (scaleX + scaleY) / 2;
+    const baseHalfWidth = clamp(
+      Math.round((nearestDistance > 0 ? nearestDistance * 0.34 : aiSourceBounds.width / 18) * averageScale),
+      54,
+      112,
+    );
+    const baseHalfHeight = clamp(
+      Math.round((nearestDistance > 0 ? nearestDistance * 0.28 : aiSourceBounds.height / 22) * averageScale),
+      42,
+      96,
+    );
+
+    logPlanImport(debugContext, "image.local_ocr.started", {
+      aiEntries: aiEntries.length,
+      nearestDistance,
+      baseHalfWidth,
+      baseHalfHeight,
+    });
+
+    const recoveredEntries: MesaSillaPair[] = [];
+    const recoveredMesaNumbers = new Set<number>();
+    const fallbackMesaNumbers = new Set(aiEntries.map((entry) => entry.numero));
+
+    for (const entry of aiEntries) {
+      assertImportNotCancelled(debugContext);
+      if (typeof entry.x !== "number" || typeof entry.y !== "number") {
+        recoveredEntries.push(entry);
+        continue;
+      }
+
+      const centerX = Math.round(entry.x * scaleX);
+      const centerY = Math.round(entry.y * scaleY);
+      const attempts = [
+        { halfWidth: baseHalfWidth, halfHeight: baseHalfHeight },
+        { halfWidth: Math.round(baseHalfWidth * 1.15), halfHeight: Math.round(baseHalfHeight * 1.15) },
+      ];
+
+      let recovered: MesaSillaPair | null = null;
+
+      for (const attempt of attempts) {
+        const cropRegion = clampCropRegion(
+          {
+            x: centerX - attempt.halfWidth,
+            y: centerY - attempt.halfHeight,
+            width: attempt.halfWidth * 2,
+            height: attempt.halfHeight * 2,
+          },
+          originalWidth,
+          originalHeight,
+        );
+
+        const croppedBuffer = await cropBufferToRegion(buffer, cropRegion);
+        const variants = await createOcrVariants(croppedBuffer, { mode: "crop" });
+        let bestPair: MesaSillaPair | null = null;
+        let bestPairScore = Number.NEGATIVE_INFINITY;
+
+        for (const variant of variants.slice(0, 2)) {
+          const result = await runOcrVariantBuffer(worker, variant);
+          const candidate = result.pairs[0] ?? result.textFallback[0] ?? null;
+
+          if (!candidate) {
+            continue;
+          }
+
+          const score =
+            (result.pairs[0] ? 200 : 0) +
+            result.score +
+            (candidate.chairCount === entry.chairCount ? 20 : 0);
+
+          if (score > bestPairScore) {
+            bestPairScore = score;
+            bestPair = candidate;
+          }
+        }
+
+        const validChairCount =
+          bestPair &&
+          Number.isInteger(bestPair.chairCount) &&
+          bestPair.chairCount >= 2 &&
+          bestPair.chairCount <= 16
+            ? bestPair.chairCount
+            : null;
+        const canReplaceNumero =
+          bestPair &&
+          Number.isInteger(bestPair.numero) &&
+          bestPair.numero > 0 &&
+          (
+            bestPair.numero === entry.numero ||
+            (!fallbackMesaNumbers.has(bestPair.numero) && !recoveredMesaNumbers.has(bestPair.numero))
+          );
+
+        if (bestPair && (validChairCount || canReplaceNumero)) {
+          recovered = {
+            numero: canReplaceNumero ? bestPair.numero : entry.numero,
+            chairCount: validChairCount ?? entry.chairCount,
+            x: entry.x,
+            y: entry.y,
+          };
+          recoveredMesaNumbers.add(recovered.numero);
+          break;
+        }
+      }
+
+      recoveredEntries.push(
+        recovered ?? {
+          ...entry,
+        },
+      );
+    }
+
+    const recoveredCount = recoveredEntries.filter((entry) => recoveredMesaNumbers.has(entry.numero)).length;
+    logPlanImport(debugContext, "image.local_ocr.completed", {
+      recoveredCount,
+      total: recoveredEntries.length,
+    });
+
+    return recoveredEntries;
+  } finally {
+    await worker.terminate();
+  }
+}
+
+function computeTableRegionFromTokens(
+  tokens: OcrToken[],
+  imageWidth: number,
+  imageHeight: number,
+) {
+  const mesaTokens = tokens.filter((token) => token.kind === "mesa" && token.confidence >= 15);
+
+  if (mesaTokens.length < 4) {
+    return null;
+  }
+
+  const centers = mesaTokens.map((token) => ({
+    token,
+    centerX: token.x + token.width / 2,
+    centerY: token.y + token.height / 2,
+  }));
+  const nearestNeighborDistances = centers.map((center, index) => {
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    for (let candidateIndex = 0; candidateIndex < centers.length; candidateIndex += 1) {
+      if (candidateIndex === index) {
+        continue;
+      }
+
+      const candidate = centers[candidateIndex];
+      const distance = Math.hypot(
+        candidate.centerX - center.centerX,
+        candidate.centerY - center.centerY,
+      );
+      bestDistance = Math.min(bestDistance, distance);
+    }
+
+    return Number.isFinite(bestDistance) ? bestDistance : 0;
+  });
+
+  const medianNearestNeighbor = median(nearestNeighborDistances.filter((distance) => distance > 0));
+  const averageWidth =
+    mesaTokens.reduce((sum, token) => sum + token.width, 0) / Math.max(1, mesaTokens.length);
+  const averageHeight =
+    mesaTokens.reduce((sum, token) => sum + token.height, 0) / Math.max(1, mesaTokens.length);
+  const linkThresholdX = Math.max(averageWidth * 7, medianNearestNeighbor * 2.4, imageWidth * 0.05);
+  const linkThresholdY = Math.max(averageHeight * 7, medianNearestNeighbor * 1.9, imageHeight * 0.05);
+  const visited = new Set<number>();
+  const components: number[][] = [];
+
+  for (let index = 0; index < centers.length; index += 1) {
+    if (visited.has(index)) {
+      continue;
+    }
+
+    const queue = [index];
+    const component: number[] = [];
+    visited.add(index);
+
+    while (queue.length > 0) {
+      const currentIndex = queue.shift()!;
+      component.push(currentIndex);
+      const current = centers[currentIndex];
+
+      for (let candidateIndex = 0; candidateIndex < centers.length; candidateIndex += 1) {
+        if (visited.has(candidateIndex)) {
+          continue;
+        }
+
+        const candidate = centers[candidateIndex];
+        if (
+          Math.abs(candidate.centerX - current.centerX) <= linkThresholdX &&
+          Math.abs(candidate.centerY - current.centerY) <= linkThresholdY
+        ) {
+          visited.add(candidateIndex);
+          queue.push(candidateIndex);
+        }
+      }
+    }
+
+    components.push(component);
+  }
+
+  const bestComponent = components
+    .map((component) => ({
+      component,
+      size: component.length,
+      confidence: component.reduce((sum, componentIndex) => sum + centers[componentIndex].token.confidence, 0),
+    }))
+    .sort((a, b) => (b.size === a.size ? b.confidence - a.confidence : b.size - a.size))[0];
+
+  if (!bestComponent || bestComponent.size < 4) {
+    return null;
+  }
+
+  const selectedMesaTokens = bestComponent.component.map((componentIndex) => centers[componentIndex].token);
+  const mesaBounds = {
+    minX: Math.min(...selectedMesaTokens.map((token) => token.x)),
+    minY: Math.min(...selectedMesaTokens.map((token) => token.y)),
+    maxX: Math.max(...selectedMesaTokens.map((token) => token.x + token.width)),
+    maxY: Math.max(...selectedMesaTokens.map((token) => token.y + token.height)),
+  };
+  const nearbyChairTokens = tokens.filter((token) => {
+    if (token.kind !== "silla") {
+      return false;
+    }
+
+    const centerX = token.x + token.width / 2;
+    const centerY = token.y + token.height / 2;
+
+    return (
+      centerX >= mesaBounds.minX - linkThresholdX * 0.8 &&
+      centerX <= mesaBounds.maxX + linkThresholdX * 0.8 &&
+      centerY >= mesaBounds.minY - linkThresholdY &&
+      centerY <= mesaBounds.maxY + linkThresholdY
+    );
+  });
+  const allRelevantTokens = [...selectedMesaTokens, ...nearbyChairTokens];
+  const tokenBounds = {
+    minX: Math.min(...allRelevantTokens.map((token) => token.x)),
+    minY: Math.min(...allRelevantTokens.map((token) => token.y)),
+    maxX: Math.max(...allRelevantTokens.map((token) => token.x + token.width)),
+    maxY: Math.max(...allRelevantTokens.map((token) => token.y + token.height)),
+  };
+  const paddingX = Math.max(averageWidth * 4.5, imageWidth * 0.03);
+  const paddingY = Math.max(averageHeight * 5, imageHeight * 0.035);
+  const x = clamp(Math.floor(tokenBounds.minX - paddingX), 0, imageWidth - 1);
+  const y = clamp(Math.floor(tokenBounds.minY - paddingY), 0, imageHeight - 1);
+  const maxX = clamp(Math.ceil(tokenBounds.maxX + paddingX), x + 1, imageWidth);
+  const maxY = clamp(Math.ceil(tokenBounds.maxY + paddingY), y + 1, imageHeight);
+
+  return {
+    x,
+    y,
+    width: maxX - x,
+    height: maxY - y,
+  } satisfies CropRegion;
+}
+
+async function cropBufferToRegion(buffer: Buffer, region: CropRegion) {
+  const image = await Jimp.read(buffer);
+  const cropped = image.clone().crop({
+    x: region.x,
+    y: region.y,
+    w: region.width,
+    h: region.height,
+  });
+
+  return Buffer.from(await cropped.getBuffer("image/png"));
+}
+
+async function buildGeometryContactSheet(
+  buffer: Buffer,
+  layout: DetectedImageLayout,
+  mode: "original" | "threshold" = "original",
+) {
+  const orderedTables = sortEntriesBySpatialOrder(layout.tables).filter(
+    (entry): entry is MesaSillaPair & { x: number; y: number } =>
+      typeof entry.x === "number" && typeof entry.y === "number",
+  );
+
+  if (orderedTables.length === 0) {
+    return null;
+  }
+
+  const rows = groupEntriesIntoRows(orderedTables);
+  const columns = Math.max(...rows.map((row) => row.length), 1);
+  const nearestDistance = Math.max(90, layout.nearestDistance || 110);
+  const halfWidth = clamp(Math.round(nearestDistance * 0.56), 82, 150);
+  const halfHeight = clamp(Math.round(nearestDistance * 0.46), 72, 130);
+  const cellWidth = 220;
+  const cellHeight = 190;
+  const padding = 18;
+  const canvasWidth = columns * cellWidth;
+  const canvasHeight = rows.length * cellHeight;
+  const composites: sharp.OverlayOptions[] = [];
+  let index = 0;
+
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+    for (let columnIndex = 0; columnIndex < rows[rowIndex].length; columnIndex += 1) {
+      const table = rows[rowIndex][columnIndex];
+      const cropRegion = clampCropRegion(
+        {
+          x: table.x - halfWidth,
+          y: table.y - halfHeight,
+          width: halfWidth * 2,
+          height: halfHeight * 2,
+        },
+        layout.sourceBounds.width,
+        layout.sourceBounds.height,
+      );
+
+      let cropPipeline = sharp(buffer)
+        .extract({
+          left: cropRegion.x,
+          top: cropRegion.y,
+          width: cropRegion.width,
+          height: cropRegion.height,
+        })
+        .greyscale()
+        .normalize();
+
+      if (mode === "threshold") {
+        cropPipeline = cropPipeline.modulate({ brightness: 1.05 }).threshold(178);
+      }
+
+      const cropped = await cropPipeline
+        .resize({
+          width: cellWidth - padding * 2,
+          height: cellHeight - padding * 2,
+          fit: "contain",
+          background: { r: 255, g: 255, b: 255, alpha: 1 },
+        })
+        .png()
+        .toBuffer();
+
+      const labelSvg = Buffer.from(`
+        <svg width="${cellWidth}" height="${cellHeight}" xmlns="http://www.w3.org/2000/svg">
+          <rect x="0" y="0" width="${cellWidth}" height="${cellHeight}" rx="18" ry="18" fill="#ffffff"/>
+          <text x="16" y="26" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#111827">
+            Pos ${index + 1}
+          </text>
+        </svg>
+      `);
+
+      composites.push({
+        input: labelSvg,
+        left: columnIndex * cellWidth,
+        top: rowIndex * cellHeight,
+      });
+      composites.push({
+        input: cropped,
+        left: columnIndex * cellWidth + padding,
+        top: rowIndex * cellHeight + padding + 10,
+      });
+      index += 1;
+    }
+  }
+
+  const bufferOut = await sharp({
+    create: {
+      width: canvasWidth,
+      height: canvasHeight,
+      channels: 4,
+      background: { r: 248, g: 250, b: 252, alpha: 1 },
+    },
+  })
+    .composite(composites)
+    .png()
+    .toBuffer();
+
+  return {
+    buffer: bufferOut,
+    rowCount: rows.length,
+    columnCount: columns,
+  };
+}
+
+async function runOcrVariantBuffer(
+  worker: OcrWorkerLike,
+  variant: OcrVariant,
+) {
+  const result = await worker.recognize(
+    variant.buffer,
+    {},
+    { hocr: true, text: true },
+  );
+  const tokens = parseHocrTokens(String(result.data.hocr ?? ""));
+  const pairs = buildMesaSillaPairsFromTokens(tokens);
+  const textFallback = parseGenericMesaSillaText(String(result.data.text ?? ""));
+  const score =
+    pairs.length * 1000 +
+    textFallback.length * 120 +
+    pairs.reduce((sum, pair) => sum + pair.chairCount, 0) +
+    tokens.reduce((sum, token) => sum + token.confidence, 0) * 0.01;
+
+  return {
+    label: variant.label,
+    buffer: variant.buffer,
+    width: variant.width,
+    height: variant.height,
+    scale: variant.scale,
+    tokens,
+    pairs,
+    textFallback,
+    score,
+  } satisfies OcrRunResult;
+}
+
 function entriesToImportedTables(
   entries: MesaSillaPair[],
   existingTableCount: number,
   sourceBounds?: ImportSourceBounds,
 ) {
-  const regularizedEntries = sourceBounds
+  const shouldRegularize = sourceBounds
+    ? Boolean(sourceBounds.preferRegularized) || !hasReliableSpatialLayout(entries)
+    : false;
+  const regularizedEntries = shouldRegularize
     ? regularizeSpatialEntries(entries)
     : [];
   const regularizedByMesa = new Map(
@@ -562,6 +2519,456 @@ function parseSpreadsheetEntries(rows: Record<string, unknown>[]) {
   return results;
 }
 
+function sanitizeAiImportedTables(payload: AiImportedPlanPayload | null) {
+  if (!payload || !Array.isArray(payload.tables)) {
+    return null;
+  }
+
+  const seen = new Set<number>();
+  const tables = payload.tables
+    .map((table) => ({
+      numero: Number(table.numero),
+      chairCount: Number(table.chairCount),
+      x: Number(table.x),
+      y: Number(table.y),
+      confidence: typeof table.confidence === "number" ? table.confidence : undefined,
+    }))
+    .filter(
+      (table) =>
+        Number.isInteger(table.numero) &&
+        table.numero > 0 &&
+        Number.isInteger(table.chairCount) &&
+        table.chairCount > 0 &&
+        Number.isFinite(table.x) &&
+        Number.isFinite(table.y),
+    )
+    .filter((table) => {
+      if (seen.has(table.numero)) {
+        return false;
+      }
+      seen.add(table.numero);
+      return true;
+    });
+
+  if (tables.length === 0) {
+    return null;
+  }
+
+  return {
+    width:
+      typeof payload.width === "number" && Number.isFinite(payload.width)
+        ? payload.width
+        : undefined,
+    height:
+      typeof payload.height === "number" && Number.isFinite(payload.height)
+        ? payload.height
+        : undefined,
+    tables,
+  };
+}
+
+function extractResponseOutputText(responseJson: Record<string, unknown>) {
+  const directOutput = responseJson.output_text;
+  if (typeof directOutput === "string" && directOutput.trim()) {
+    return directOutput.trim();
+  }
+
+  const output = Array.isArray(responseJson.output) ? responseJson.output : [];
+
+  for (const item of output) {
+    const message = item as { content?: unknown[] };
+    const content = Array.isArray(message.content) ? message.content : [];
+
+    for (const part of content) {
+      const block = part as { type?: string; text?: string };
+      if (block.type === "output_text" && typeof block.text === "string" && block.text.trim()) {
+        return block.text.trim();
+      }
+    }
+  }
+
+  return "";
+}
+
+async function bufferToPngDataUrl(buffer: Buffer, fallbackMimeType = "image/png") {
+  try {
+    const image = await Jimp.read(buffer);
+    const maxDimension = 1800;
+    if (image.bitmap.width > maxDimension || image.bitmap.height > maxDimension) {
+      image.scaleToFit({ w: maxDimension, h: maxDimension });
+    }
+    const pngBuffer = Buffer.from(await image.getBuffer("image/png"));
+    return {
+      dataUrl: `data:image/png;base64,${pngBuffer.toString("base64")}`,
+      width: image.bitmap.width,
+      height: image.bitmap.height,
+    };
+  } catch {
+    return {
+      dataUrl: `data:${fallbackMimeType};base64,${buffer.toString("base64")}`,
+      width: undefined,
+      height: undefined,
+    };
+  }
+}
+
+async function callOpenAIPlanImporter({
+  inputItems,
+  sourceLabel,
+  debugContext,
+}: {
+  inputItems: Array<Record<string, unknown>>;
+  sourceLabel: string;
+  debugContext?: PlanImportDebugContext;
+}) {
+  const apiKey = getOpenAIApiKey();
+
+  if (!apiKey) {
+    logPlanImport(debugContext, "openai.skipped", { sourceLabel, reason: "missing_api_key" });
+    return null;
+  }
+
+  logPlanImport(debugContext, "openai.request.started", {
+    sourceLabel,
+    inputItems: inputItems.length,
+    model: OPENAI_IMPORT_MODEL,
+  });
+
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    required: ["width", "height", "tables"],
+    properties: {
+      width: { type: ["number", "null"] },
+      height: { type: ["number", "null"] },
+      tables: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["numero", "chairCount", "x", "y", "confidence"],
+          properties: {
+            numero: { type: "integer" },
+            chairCount: { type: "integer" },
+            x: { type: "number" },
+            y: { type: "number" },
+            confidence: { type: ["number", "null"] },
+          },
+        },
+      },
+    },
+  };
+
+  const instructions = [
+    "Eres un sistema de lectura de planos de mesas para eventos.",
+    "Debes localizar unicamente mesas identificadas con etiquetas internas tipo M:x y la cantidad de sillas asociada S:x.",
+    "Devuelve solo JSON valido siguiendo exactamente el esquema.",
+    "x e y deben ser el centro aproximado de cada mesa dentro del plano.",
+    "Si el archivo es visual, prioriza la colocacion espacial real.",
+    "Si el archivo es textual o PDF digital, reconstruye el orden espacial mas plausible por filas y columnas.",
+    "Ignora cualquier texto global del plano como 42 MESAS, 12 PAX, 500 PAX, nombres del evento, marcas o leyendas.",
+    "No uses un valor global de PAX como chairCount de todas las mesas.",
+    "No renumeres mesas en secuencia si no puedes leer su M:x real dentro de cada mesa.",
+    "Cada mesa debe salir solo si puedes asociar visualmente su centro y su etiqueta M:x / S:x.",
+    "No inventes mesas ni sillas si no hay evidencia razonable.",
+  ].join(" ");
+
+  let response: Response;
+  try {
+    response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      signal: getImportAbortSignal(debugContext),
+      body: JSON.stringify({
+        model: OPENAI_IMPORT_MODEL,
+        max_output_tokens: 4000,
+        input: [
+          {
+            role: "developer",
+            content: [{ type: "input_text", text: instructions }],
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: `Analiza este plano (${sourceLabel}) y extrae mesas y sillas. Si hay conflicto entre texto y dibujo, usa la distribucion visual real y corrige el texto usando el patron M:x / S:x.`,
+              },
+              ...inputItems,
+            ],
+          },
+        ],
+        text: {
+          format: {
+            type: "json_schema",
+            name: "seating_plan",
+            strict: true,
+            schema,
+          },
+        },
+      }),
+    });
+  } catch (error) {
+    if (isAbortLikeError(error)) {
+      throw new PlanImportCancelledError();
+    }
+
+    throw error;
+  }
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "");
+    logPlanImport(debugContext, "openai.request.failed", {
+      sourceLabel,
+      status: response.status,
+      errorText,
+    });
+    throw new Error(`OpenAI import failed (${response.status}): ${errorText}`);
+  }
+
+  const responseJson = (await response.json()) as Record<string, unknown>;
+  const rawOutput = extractResponseOutputText(responseJson);
+  const parsed = parseJsonSafe<AiImportedPlanPayload>(rawOutput);
+  const sanitized = sanitizeAiImportedTables(parsed);
+  logPlanImport(debugContext, "openai.request.completed", {
+    sourceLabel,
+    outputLength: rawOutput.length,
+    tableCount: sanitized?.tables.length ?? 0,
+  });
+  return sanitized;
+}
+
+async function callOpenAIOrderedLabelReader({
+  inputItems,
+  sourceLabel,
+  hints,
+  forceExactHints,
+  reviewContext,
+  debugContext,
+}: {
+  inputItems: Array<Record<string, unknown>>;
+  sourceLabel: string;
+  hints?: PlanImportHints;
+  forceExactHints?: boolean;
+  reviewContext?: string;
+  debugContext?: PlanImportDebugContext;
+}) {
+  const apiKey = getOpenAIApiKey();
+
+  if (!apiKey) {
+    logPlanImport(debugContext, "openai.ordered_labels.skipped", {
+      sourceLabel,
+      reason: "missing_api_key",
+    });
+    return null;
+  }
+
+  logPlanImport(debugContext, "openai.ordered_labels.started", {
+    sourceLabel,
+    inputItems: inputItems.length,
+    model: OPENAI_IMPORT_MODEL,
+  });
+
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    required: ["tables"],
+    properties: {
+      tables: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["numero", "chairCount"],
+          properties: {
+            numero: { type: "integer" },
+            chairCount: { type: "integer" },
+          },
+        },
+      },
+    },
+  };
+
+  const instructions = [
+    "Eres un sistema de lectura de planos de mesas para eventos.",
+    "Debes devolver UNICAMENTE la lista de mesas visibles dentro de la zona de mesas.",
+    "Lee solo etiquetas internas M:x y S:x de cada mesa.",
+    "Ignora por completo texto global del plano como 42 MESAS, 12 PAX, 500 PAX, nombres del evento, marcas, logos, leyendas, DJ, barra, cotas o anotaciones tecnicas.",
+    "Devuelve las mesas exactamente en orden visual: de arriba a abajo y, dentro de cada fila, de izquierda a derecha.",
+    "NO renumeres mesas, NO inventes sillas y NO uses un valor global de PAX para varias mesas.",
+    "Si una mesa no se puede leer con suficiente seguridad, omítela antes de inventarla.",
+    "Devuelve solo JSON valido siguiendo exactamente el esquema.",
+    forceExactHints && typeof hints?.expectedTableCount === "number"
+      ? `Debes devolver exactamente ${hints.expectedTableCount} mesas.`
+      : "",
+    forceExactHints && typeof hints?.expectedChairTotal === "number"
+      ? `La suma total de chairCount debe ser exactamente ${hints.expectedChairTotal}.`
+      : "",
+  ].join(" ");
+
+  const hintsText = [
+    typeof hints?.expectedTableCount === "number"
+      ? `Mesas esperadas: ${hints.expectedTableCount}.`
+      : "",
+    typeof hints?.expectedRowCount === "number"
+      ? `Filas esperadas: ${hints.expectedRowCount}.`
+      : "",
+    typeof hints?.expectedColumnCount === "number"
+      ? `Columnas esperadas: ${hints.expectedColumnCount}.`
+      : "",
+    typeof hints?.expectedChairTotal === "number"
+      ? `Sillas totales esperadas: ${hints.expectedChairTotal}.`
+      : "",
+    hints?.learningContext
+      ? `Ejemplos validados disponibles:\n${hints.learningContext}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  let response: Response;
+  try {
+    response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      signal: getImportAbortSignal(debugContext),
+      body: JSON.stringify({
+        model: OPENAI_IMPORT_MODEL,
+        max_output_tokens: 3000,
+        input: [
+          {
+            role: "developer",
+            content: [{ type: "input_text", text: instructions }],
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: `Analiza esta imagen (${sourceLabel}) y devuelve solo la lista ordenada de mesas M:x con su S:x correspondiente en orden visual real. ${hintsText} ${reviewContext ?? ""}`.trim(),
+              },
+              ...inputItems,
+            ],
+          },
+        ],
+        text: {
+          format: {
+            type: "json_schema",
+            name: "seating_plan_ordered_labels",
+            strict: true,
+            schema,
+          },
+        },
+      }),
+    });
+  } catch (error) {
+    if (isAbortLikeError(error)) {
+      throw new PlanImportCancelledError();
+    }
+
+    throw error;
+  }
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "");
+    logPlanImport(debugContext, "openai.ordered_labels.failed", {
+      sourceLabel,
+      status: response.status,
+      errorText,
+    });
+    throw new Error(`OpenAI ordered labels failed (${response.status}): ${errorText}`);
+  }
+
+  const responseJson = (await response.json()) as Record<string, unknown>;
+  const rawOutput = extractResponseOutputText(responseJson);
+  const parsed = parseJsonSafe<AiOrderedPlanPayload>(rawOutput);
+  const tables = Array.isArray(parsed?.tables)
+    ? parsed.tables
+        .filter(
+          (table): table is AiOrderedPlanTable =>
+            Number.isInteger(table?.numero) &&
+            (table?.numero ?? 0) > 0 &&
+            Number.isInteger(table?.chairCount) &&
+            (table?.chairCount ?? 0) >= 2 &&
+            (table?.chairCount ?? 0) <= 16,
+        )
+        .map((table) => ({
+          numero: table.numero,
+          chairCount: table.chairCount,
+        }))
+    : [];
+
+  logPlanImport(debugContext, "openai.ordered_labels.completed", {
+    sourceLabel,
+    outputLength: rawOutput.length,
+    tableCount: tables.length,
+  });
+
+  return tables;
+}
+
+async function importPlanWithOpenAIFromImage(
+  buffer: Buffer,
+  mimeType: string,
+  debugContext?: PlanImportDebugContext,
+) {
+  if (!canUseOpenAIImporter()) {
+    logPlanImport(debugContext, "image.openai.skipped", { reason: "missing_api_key" });
+    return null;
+  }
+
+  const prepared = await bufferToPngDataUrl(buffer, mimeType || "image/png");
+  const aiResult = await callOpenAIPlanImporter({
+    sourceLabel: "imagen",
+    debugContext,
+    inputItems: [
+      {
+        type: "input_image",
+        image_url: prepared.dataUrl,
+        detail: "high",
+      },
+    ],
+  });
+
+  if (!aiResult) {
+    logPlanImport(debugContext, "image.openai.empty");
+    return null;
+  }
+
+  logPlanImport(debugContext, "image.openai.success", {
+    tableCount: aiResult.tables.length,
+    width: aiResult.width ?? null,
+    height: aiResult.height ?? null,
+  });
+
+  const effectiveWidth =
+    typeof aiResult.width === "number" && Number.isFinite(aiResult.width)
+      ? aiResult.width
+      : prepared.width;
+  const effectiveHeight =
+    typeof aiResult.height === "number" && Number.isFinite(aiResult.height)
+      ? aiResult.height
+      : prepared.height;
+
+  return {
+    tables: aiResult.tables,
+    sourceBounds:
+      typeof effectiveWidth === "number" && typeof effectiveHeight === "number"
+        ? {
+            width: effectiveWidth,
+            height: effectiveHeight,
+            ...(getContentBounds(aiResult.tables) ?? {}),
+          }
+        : null,
+  };
+}
+
 function parseSvgFile(text: string) {
   const normalized = normalizeText(text);
   const svgTagMatch = normalized.match(/<svg\b([^>]*)>/i);
@@ -786,8 +3193,8 @@ async function parseDigitalPdfSpatialEntries(buffer: Buffer) {
   return entries;
 }
 
-function parseHocrTokens(hocr: string) {
-  const tokens: OcrToken[] = [];
+function parseHocrWords(hocr: string) {
+  const words: OcrWord[] = [];
   const wordRegex = /<span class='ocrx_word'[^>]*title='([^']+)'[^>]*>(.*?)<\/span>/g;
 
   for (const match of hocr.matchAll(wordRegex)) {
@@ -795,11 +3202,6 @@ function parseHocrTokens(hocr: string) {
     const rawText = match[2].replace(/<[^>]+>/g, "").trim();
 
     if (!rawText) {
-      continue;
-    }
-
-    const parsed = parseMesaOrSillaToken(rawText);
-    if (!parsed) {
       continue;
     }
 
@@ -814,15 +3216,94 @@ function parseHocrTokens(hocr: string) {
     const x1 = Number(bboxMatch[3]);
     const y1 = Number(bboxMatch[4]);
 
-    tokens.push({
-      kind: parsed.kind,
-      value: parsed.value,
+    words.push({
+      text: rawText,
       x: x0,
       y: y0,
       width: Math.max(1, x1 - x0),
       height: Math.max(1, y1 - y0),
       confidence,
     });
+  }
+
+  return words;
+}
+
+function parseHocrTokens(hocr: string) {
+  const words = parseHocrWords(hocr)
+    .filter((word) => word.confidence >= 10)
+    .sort((a, b) => (Math.abs(a.y - b.y) < 14 ? a.x - b.x : a.y - b.y));
+  const tokens: OcrToken[] = [];
+  const usedWordIndexes = new Set<number>();
+
+  for (let index = 0; index < words.length; index += 1) {
+    if (usedWordIndexes.has(index)) {
+      continue;
+    }
+
+    const word = words[index];
+    const direct = parseMesaOrSillaToken(word.text);
+
+    if (direct) {
+      usedWordIndexes.add(index);
+      tokens.push({
+        kind: direct.kind,
+        value: direct.value,
+        x: word.x,
+        y: word.y,
+        width: word.width,
+        height: word.height,
+        confidence: word.confidence,
+      });
+      continue;
+    }
+
+    const lineNeighbors: Array<{ word: OcrWord; index: number }> = [{ word, index }];
+
+    for (let nextIndex = index + 1; nextIndex < Math.min(words.length, index + 4); nextIndex += 1) {
+      const nextWord = words[nextIndex];
+      const sameLineThreshold = Math.max(word.height, nextWord.height) * 0.75 + 10;
+      const gapX = nextWord.x - (lineNeighbors[lineNeighbors.length - 1].word.x + lineNeighbors[lineNeighbors.length - 1].word.width);
+
+      if (Math.abs(nextWord.y - word.y) > sameLineThreshold) {
+        break;
+      }
+
+      if (gapX > Math.max(word.height * 2.8, 44)) {
+        break;
+      }
+
+      lineNeighbors.push({ word: nextWord, index: nextIndex });
+    }
+
+    for (let length = Math.min(3, lineNeighbors.length); length >= 2; length -= 1) {
+      const slice = lineNeighbors.slice(0, length);
+      const compact = slice.map((entry) => entry.word.text).join("");
+      const parsed = parseMesaOrSillaToken(compact);
+
+      if (!parsed) {
+        continue;
+      }
+
+      slice.forEach((entry) => usedWordIndexes.add(entry.index));
+      const minX = Math.min(...slice.map((entry) => entry.word.x));
+      const minY = Math.min(...slice.map((entry) => entry.word.y));
+      const maxX = Math.max(...slice.map((entry) => entry.word.x + entry.word.width));
+      const maxY = Math.max(...slice.map((entry) => entry.word.y + entry.word.height));
+      const confidence =
+        slice.reduce((sum, entry) => sum + entry.word.confidence, 0) / slice.length;
+
+      tokens.push({
+        kind: parsed.kind,
+        value: parsed.value,
+        x: minX,
+        y: minY,
+        width: Math.max(1, maxX - minX),
+        height: Math.max(1, maxY - minY),
+        confidence,
+      });
+      break;
+    }
   }
 
   return tokens;
@@ -910,24 +3391,36 @@ function mergeExactChairCounts(spatialPairs: MesaSillaPair[], exactPairs: MesaSi
   return merged;
 }
 
-async function createOcrVariants(buffer: Buffer) {
+async function createOcrVariants(
+  buffer: Buffer,
+  options?: {
+    mode?: "full" | "crop";
+  },
+) {
   const baseImage = await Jimp.read(buffer);
   const variants: OcrVariant[] = [];
+  const mode = options?.mode ?? "full";
+  const maxDimension = Math.max(baseImage.bitmap.width, baseImage.bitmap.height);
+  const isVeryLargeImage = maxDimension >= 3200;
 
-  const gray2x = baseImage.clone().greyscale().contrast(0.6).scale(2);
+  const gray2xScale = mode === "crop" && isVeryLargeImage ? 1.6 : 2;
+  const gray2x = baseImage.clone().greyscale().contrast(0.6).scale(gray2xScale);
   variants.push({
-    label: "gray2x",
+    label: `gray${gray2xScale}x`,
     buffer: await gray2x.getBuffer("image/png"),
     width: gray2x.bitmap.width,
     height: gray2x.bitmap.height,
+    scale: gray2xScale,
   });
 
-  const gray3x = baseImage.clone().greyscale().contrast(0.75).normalize().scale(3);
+  const gray3xScale = mode === "crop" && isVeryLargeImage ? 2 : 3;
+  const gray3x = baseImage.clone().greyscale().contrast(0.75).normalize().scale(gray3xScale);
   variants.push({
-    label: "gray3x",
+    label: `gray${gray3xScale}x`,
     buffer: await gray3x.getBuffer("image/png"),
     width: gray3x.bitmap.width,
     height: gray3x.bitmap.height,
+    scale: gray3xScale,
   });
 
   const threshold3x = baseImage
@@ -935,19 +3428,92 @@ async function createOcrVariants(buffer: Buffer) {
     .greyscale()
     .contrast(1)
     .normalize()
-    .scale(3)
+    .scale(mode === "crop" && isVeryLargeImage ? 2 : 3)
     .threshold({ max: 180 });
   variants.push({
-    label: "threshold3x",
+    label: mode === "crop" && isVeryLargeImage ? "threshold2x" : "threshold3x",
     buffer: await threshold3x.getBuffer("image/png"),
     width: threshold3x.bitmap.width,
     height: threshold3x.bitmap.height,
+    scale: mode === "crop" && isVeryLargeImage ? 2 : 3,
   });
+
+  if (!(mode === "crop" && isVeryLargeImage)) {
+    const threshold4x = baseImage
+      .clone()
+      .greyscale()
+      .contrast(1)
+      .normalize()
+      .scale(mode === "crop" ? 3 : 4)
+      .threshold({ max: 170 });
+    variants.push({
+      label: mode === "crop" ? "threshold3x" : "threshold4x",
+      buffer: await threshold4x.getBuffer("image/png"),
+      width: threshold4x.bitmap.width,
+      height: threshold4x.bitmap.height,
+      scale: mode === "crop" ? 3 : 4,
+    });
+  }
 
   return variants;
 }
 
-async function extractOcrPairsFromBuffer(buffer: Buffer) {
+async function renderPdfFirstPageVariants(buffer: Buffer, scales = [2.2, 3]) {
+  const pdfjs = (await import("pdfjs-dist/legacy/build/pdf.mjs")) as {
+    getDocument: (options: Record<string, unknown>) => { promise: Promise<any> };
+  };
+  const canvasModule = await import("@napi-rs/canvas");
+  const createCanvas =
+    (canvasModule as { createCanvas?: (width: number, height: number) => any }).createCanvas;
+
+  if (!createCanvas) {
+    return [] as Array<{ buffer: Buffer; width: number; height: number }>;
+  }
+
+  const loadingTask = pdfjs.getDocument({
+    data: new Uint8Array(buffer),
+    useWorkerFetch: false,
+    isEvalSupported: false,
+    useSystemFonts: true,
+  });
+  const document = await loadingTask.promise;
+
+  try {
+    const page = await document.getPage(1);
+    const renderedPages: Array<{ buffer: Buffer; width: number; height: number }> = [];
+
+    for (const scale of scales) {
+      const viewport = page.getViewport({ scale });
+      const canvas = createCanvas(
+        Math.max(1, Math.ceil(viewport.width)),
+        Math.max(1, Math.ceil(viewport.height)),
+      );
+      const context = canvas.getContext("2d");
+
+      await page.render({
+        canvasContext: context,
+        viewport,
+      }).promise;
+
+      renderedPages.push({
+        buffer: Buffer.from(canvas.toBuffer("image/png")),
+        width: canvas.width,
+        height: canvas.height,
+      });
+    }
+
+    return renderedPages;
+  } finally {
+    if (typeof document.destroy === "function") {
+      await document.destroy();
+    }
+  }
+}
+
+async function extractOcrPairsFromBuffer(
+  buffer: Buffer,
+  debugContext?: PlanImportDebugContext,
+) {
   const tesseractModule = await import("tesseract.js");
   const tesseract = tesseractModule.default ?? tesseractModule;
   const worker = await tesseract.createWorker("eng", 1, {
@@ -965,6 +3531,10 @@ async function extractOcrPairsFromBuffer(buffer: Buffer) {
   });
 
   try {
+    const originalImage = await Jimp.read(buffer);
+    const originalWidth = originalImage.bitmap.width;
+    const originalHeight = originalImage.bitmap.height;
+
     await worker.setParameters({
       tessedit_pageseg_mode: tesseract.PSM.SPARSE_TEXT,
       preserve_interword_spaces: "1",
@@ -974,12 +3544,12 @@ async function extractOcrPairsFromBuffer(buffer: Buffer) {
 
     const variants = await createOcrVariants(buffer);
     const runningOnVercel = Boolean(process.env.VERCEL);
-    let bestResult: {
-      pairs: MesaSillaPair[];
-      width: number;
-      height: number;
-      score: number;
-    } | null = null;
+    const aggregatedTokens: OcrToken[] = [];
+    logPlanImport(debugContext, "ocr.started", {
+      variants: variants.length,
+      runningOnVercel,
+    });
+    let bestResult: OcrRunResult | null = null;
     let bestTextFallback: MesaSillaPair[] = [];
 
     for (const [index, variant] of variants.entries()) {
@@ -987,30 +3557,23 @@ async function extractOcrPairsFromBuffer(buffer: Buffer) {
         break;
       }
 
-      const result = await worker.recognize(
-        variant.buffer,
-        {},
-        { hocr: true, text: true },
+      const result = await runOcrVariantBuffer(worker, variant);
+      aggregatedTokens.push(
+        ...result.tokens.map((token) => ({
+          ...token,
+          x: token.x / variant.scale,
+          y: token.y / variant.scale,
+          width: token.width / variant.scale,
+          height: token.height / variant.scale,
+        })),
       );
-      const tokens = parseHocrTokens(String(result.data.hocr ?? ""));
-      const pairs = buildMesaSillaPairsFromTokens(tokens);
-      const textFallback = parseGenericMesaSillaText(String(result.data.text ?? ""));
-      const score =
-        pairs.length * 1000 +
-        pairs.reduce((sum, pair) => sum + pair.chairCount, 0) +
-        tokens.reduce((sum, token) => sum + token.confidence, 0) * 0.01;
 
-      if (textFallback.length > bestTextFallback.length) {
-        bestTextFallback = textFallback;
+      if (result.textFallback.length > bestTextFallback.length) {
+        bestTextFallback = result.textFallback;
       }
 
-      if (!bestResult || score > bestResult.score) {
-        bestResult = {
-          pairs,
-          width: variant.width,
-          height: variant.height,
-          score,
-        };
+      if (!bestResult || result.score > bestResult.score) {
+        bestResult = result;
       }
 
       if (
@@ -1022,20 +3585,109 @@ async function extractOcrPairsFromBuffer(buffer: Buffer) {
     }
 
     if (!bestResult) {
+      logPlanImport(debugContext, "ocr.no_result");
       return {
         tables: [] as MesaSillaPair[],
         sourceBounds: null as { width: number; height: number } | null,
       };
     }
 
+    const cropRegion = computeTableRegionFromTokens(
+      bestResult.tokens,
+      bestResult.width,
+      bestResult.height,
+    );
+    let finalResult = bestResult;
+
+    if (
+      cropRegion &&
+      cropRegion.width < bestResult.width * 0.94 &&
+      cropRegion.height < bestResult.height * 0.94
+    ) {
+      const originalCropRegion = clampCropRegion(
+        {
+          x: Math.floor(cropRegion.x / bestResult.scale),
+          y: Math.floor(cropRegion.y / bestResult.scale),
+          width: Math.ceil(cropRegion.width / bestResult.scale),
+          height: Math.ceil(cropRegion.height / bestResult.scale),
+        },
+        originalWidth,
+        originalHeight,
+      );
+      logPlanImport(debugContext, "ocr.crop_region.detected", {
+        scaled: cropRegion,
+        original: originalCropRegion,
+        originalWidth,
+        originalHeight,
+        bestVariant: bestResult.label,
+        bestVariantScale: bestResult.scale,
+      });
+      const croppedBuffer = await cropBufferToRegion(buffer, originalCropRegion);
+      const croppedVariants = await createOcrVariants(croppedBuffer, { mode: "crop" });
+      let bestCropResult: OcrRunResult | null = null;
+
+      for (const [index, variant] of croppedVariants.entries()) {
+        if (runningOnVercel && index >= OCR_VARIANT_LIMIT_VERCEL) {
+          break;
+        }
+
+        const cropResult = await runOcrVariantBuffer(worker, variant);
+        if (!bestCropResult || cropResult.score > bestCropResult.score) {
+          bestCropResult = cropResult;
+        }
+      }
+
+      if (bestCropResult) {
+        logPlanImport(debugContext, "ocr.crop_region.completed", {
+          fullPairs: bestResult.pairs.length,
+          croppedPairs: bestCropResult.pairs.length,
+          croppedVariant: bestCropResult.label,
+          croppedVariantScale: bestCropResult.scale,
+        });
+
+        if (
+          bestCropResult.pairs.length > bestResult.pairs.length ||
+          (
+            bestCropResult.pairs.length === bestResult.pairs.length &&
+            hasReliableSpatialLayout(bestCropResult.pairs) &&
+            !hasReliableSpatialLayout(bestResult.pairs)
+          )
+        ) {
+          finalResult = bestCropResult;
+        }
+      }
+    }
+
+    const aggregatedPairs = buildMesaSillaPairsFromTokens(dedupeOcrTokens(aggregatedTokens));
+    if (aggregatedPairs.length > finalResult.pairs.length) {
+      logPlanImport(debugContext, "ocr.aggregated.completed", {
+        pairs: aggregatedPairs.length,
+        previousPairs: finalResult.pairs.length,
+      });
+      finalResult = {
+        ...finalResult,
+        width: originalWidth,
+        height: originalHeight,
+        scale: 1,
+        pairs: aggregatedPairs,
+      };
+    }
+
+    logPlanImport(debugContext, "ocr.completed", {
+      pairs: finalResult.pairs.length,
+      textFallbackPairs: bestTextFallback.length,
+      width: finalResult.width,
+      height: finalResult.height,
+    });
+
     return {
-      tables: bestResult.pairs.length > 0 ? bestResult.pairs : bestTextFallback,
+      tables: finalResult.pairs.length > 0 ? finalResult.pairs : bestTextFallback,
       sourceBounds:
-        bestResult.pairs.length > 0
+        finalResult.pairs.length > 0
           ? {
-              width: bestResult.width,
-              height: bestResult.height,
-              ...(getContentBounds(bestResult.pairs) ?? {}),
+              width: finalResult.width,
+              height: finalResult.height,
+              ...(getContentBounds(finalResult.pairs) ?? {}),
             }
           : null,
     };
@@ -1081,13 +3733,22 @@ async function parseSpreadsheetFile(buffer: Buffer) {
   return parseGenericMesaSillaText(csvText);
 }
 
-async function parsePdfFile(buffer: Buffer) {
+async function parsePdfFileWithDebug(
+  buffer: Buffer,
+  debugContext?: PlanImportDebugContext,
+) {
   const rawTextFallback = parseGenericMesaSillaText(buffer.toString("utf8"));
   let textEntries = rawTextFallback;
+  let digitalSpatialEntries: SpatialTextEntry[] = [];
+  let digitalSpatialPairs: MesaSillaPair[] = [];
+
+  logPlanImport(debugContext, "pdf.started", {
+    rawTextFallbackCount: rawTextFallback.length,
+  });
 
   try {
-    const digitalSpatialEntries = await parseDigitalPdfSpatialEntries(buffer);
-    const digitalSpatialPairs = parseSpatialMesaSillaEntries(digitalSpatialEntries);
+    digitalSpatialEntries = await parseDigitalPdfSpatialEntries(buffer);
+    digitalSpatialPairs = parseSpatialMesaSillaEntries(digitalSpatialEntries);
     const digitalTextEntries = parseGenericMesaSillaText(
       spatialEntriesToText(digitalSpatialEntries),
     );
@@ -1095,30 +3756,90 @@ async function parsePdfFile(buffer: Buffer) {
     if (digitalTextEntries.length > 0) {
       textEntries = digitalTextEntries;
     }
-
-    const mergedDigitalPairs = mergeExactChairCounts(digitalSpatialPairs, textEntries);
-
-    if (mergedDigitalPairs.length > 0) {
-      return {
-        tables: mergedDigitalPairs,
-        sourceBounds:
-          digitalSpatialPairs.length > 0
-            ? {
-                width: Math.max(
-                  ...digitalSpatialEntries.map((entry) => entry.x + entry.width),
-                  0,
-                ),
-                height: Math.max(
-                  ...digitalSpatialEntries.map((entry) => entry.y + entry.height),
-                  0,
-                ),
-                ...(getContentBounds(digitalSpatialPairs) ?? {}),
-              }
-            : null,
-      };
-    }
+    logPlanImport(debugContext, "pdf.digital_spatial.completed", {
+      textEntries: digitalTextEntries.length,
+      spatialEntries: digitalSpatialEntries.length,
+      spatialPairs: digitalSpatialPairs.length,
+    });
   } catch {
-    // Si el PDF digital no nos da coordenadas utiles, seguimos con OCR o texto.
+    logPlanImport(debugContext, "pdf.digital_spatial.failed");
+    digitalSpatialEntries = [];
+    digitalSpatialPairs = [];
+  }
+
+  if (canUseOpenAIImporter()) {
+    const digitalText = normalizeText(spatialEntriesToText(digitalSpatialEntries));
+    if (digitalText) {
+      const aiResult = await callOpenAIPlanImporter({
+        sourceLabel: "pdf",
+        debugContext,
+        inputItems: [
+          {
+            type: "input_text",
+            text: `Texto extraido del PDF:\n${digitalText}`,
+          },
+        ],
+      });
+
+      if (aiResult) {
+        logPlanImport(debugContext, "pdf.openai.success", {
+          tableCount: aiResult.tables.length,
+          mergedWithSpatial: digitalSpatialPairs.length > 0,
+        });
+        const mergedTables = digitalSpatialPairs.length > 0
+          ? mergeSpatialAndAiEntries(digitalSpatialPairs, aiResult.tables)
+          : aiResult.tables;
+
+        return {
+          tables: mergedTables,
+          sourceBounds:
+            digitalSpatialEntries.length > 0
+              ? {
+                  width: Math.max(
+                    ...digitalSpatialEntries.map((entry) => entry.x + entry.width),
+                    0,
+                  ),
+                  height: Math.max(
+                    ...digitalSpatialEntries.map((entry) => entry.y + entry.height),
+                    0,
+                  ),
+                  ...(getContentBounds(digitalSpatialPairs) ?? {}),
+                }
+              : typeof aiResult.width === "number" && typeof aiResult.height === "number"
+                ? {
+                    width: aiResult.width,
+                    height: aiResult.height,
+                    ...(getContentBounds(aiResult.tables) ?? {}),
+                  }
+                : null,
+        };
+      }
+    }
+  }
+
+  const mergedDigitalPairs = mergeExactChairCounts(digitalSpatialPairs, textEntries);
+
+  if (mergedDigitalPairs.length > 0) {
+    logPlanImport(debugContext, "pdf.digital_fallback.success", {
+      tableCount: mergedDigitalPairs.length,
+    });
+    return {
+      tables: mergedDigitalPairs,
+      sourceBounds:
+        digitalSpatialPairs.length > 0
+          ? {
+              width: Math.max(
+                ...digitalSpatialEntries.map((entry) => entry.x + entry.width),
+                0,
+              ),
+              height: Math.max(
+                ...digitalSpatialEntries.map((entry) => entry.y + entry.height),
+                0,
+              ),
+              ...(getContentBounds(digitalSpatialPairs) ?? {}),
+            }
+          : null,
+    };
   }
 
   if (textEntries.length > 0) {
@@ -1128,79 +3849,85 @@ async function parsePdfFile(buffer: Buffer) {
     };
   }
 
-  const pdfModule = await import("pdf-parse");
-  const { PDFParse } = pdfModule;
-  const parser = new PDFParse({ data: new Uint8Array(buffer) });
-
-  try {
-    try {
-      const textResult = await parser.getText();
-      const parserTextEntries = parseGenericMesaSillaText(String(textResult.text ?? ""));
-
-      if (parserTextEntries.length > 0) {
-        textEntries = parserTextEntries;
-        return {
-          tables: assignOrderedFallbackPositions(parserTextEntries),
-          sourceBounds: null,
-        };
+  const renderedPages = await renderPdfFirstPageVariants(buffer).catch(() => []);
+  logPlanImport(debugContext, "pdf.rendered_variants.completed", {
+    renderedPages: renderedPages.length,
+  });
+  let bestRenderedResult:
+    | {
+        tables: MesaSillaPair[];
+        sourceBounds: { width: number; height: number } | null;
       }
-    } catch {
-      // Si la extraccion textual del PDF falla, seguimos con OCR.
-    }
+    | null = null;
 
-    const screenshotScales = [1.8, 2.4, 3];
-    let bestOcrResult:
-      | {
-          tables: MesaSillaPair[];
-          sourceBounds: { width: number; height: number } | null;
-        }
-      | null = null;
+  for (const renderedPage of renderedPages) {
+    const ocrResult = await extractOcrPairsFromBuffer(renderedPage.buffer, debugContext).catch(() => ({
+      tables: [] as MesaSillaPair[],
+      sourceBounds: null as { width: number; height: number } | null,
+    }));
 
-    for (const scale of screenshotScales) {
-      try {
-        const screenshotResult = await parser.getScreenshot({
-          first: 1,
-          scale,
-          imageBuffer: true,
-          imageDataUrl: false,
-        });
+    let candidateTables = ocrResult.tables;
+    let candidateSourceBounds =
+      ocrResult.sourceBounds ??
+      {
+        width: renderedPage.width,
+        height: renderedPage.height,
+      };
 
-        const firstPage = screenshotResult.pages[0];
-        if (!firstPage?.data?.length) {
-          continue;
-        }
+    if (canUseOpenAIImporter()) {
+      const prepared = await bufferToPngDataUrl(renderedPage.buffer, "image/png");
+      const aiResult = await callOpenAIPlanImporter({
+        sourceLabel: "pdf-render",
+        debugContext,
+        inputItems: [
+          {
+            type: "input_image",
+            image_url: prepared.dataUrl,
+            detail: "high",
+          },
+        ],
+      }).catch(() => null);
 
-        const ocrResult = await extractOcrPairsFromBuffer(Buffer.from(firstPage.data));
-
-        if (
-          !bestOcrResult ||
-          ocrResult.tables.length > bestOcrResult.tables.length
-        ) {
-          bestOcrResult = ocrResult;
-        }
-      } catch {
-        // Probamos la siguiente escala sin romper toda la importacion.
-      }
-    }
-
-    if (bestOcrResult && bestOcrResult.tables.length > 0) {
-      const mergedPairs = mergeExactChairCounts(bestOcrResult.tables, textEntries);
-
-      if (mergedPairs.length > 0) {
-        return {
-          tables: mergedPairs,
-          sourceBounds: bestOcrResult.sourceBounds,
-        };
+      if (ocrResult.tables.length >= 6) {
+        candidateTables = aiResult
+          ? mergeExactChairCounts(ocrResult.tables, aiResult.tables)
+          : ocrResult.tables;
+      } else if (aiResult?.tables.length) {
+        candidateTables = aiResult.tables;
+        candidateSourceBounds =
+          typeof aiResult.width === "number" && typeof aiResult.height === "number"
+            ? {
+                width: aiResult.width,
+                height: aiResult.height,
+                ...(getContentBounds(aiResult.tables) ?? {}),
+              }
+            : candidateSourceBounds;
       }
     }
 
-    return {
-      tables: assignOrderedFallbackPositions(textEntries),
-      sourceBounds: null,
-    };
-  } finally {
-    await parser.destroy();
+    if (
+      !bestRenderedResult ||
+      candidateTables.length > bestRenderedResult.tables.length
+    ) {
+      bestRenderedResult = {
+        tables: candidateTables,
+        sourceBounds: candidateSourceBounds,
+      };
+    }
   }
+
+  if (bestRenderedResult && bestRenderedResult.tables.length > 0) {
+    logPlanImport(debugContext, "pdf.rendered_fallback.success", {
+      tableCount: bestRenderedResult.tables.length,
+    });
+    return bestRenderedResult;
+  }
+
+  logPlanImport(debugContext, "pdf.completed.empty");
+  return {
+    tables: assignOrderedFallbackPositions(textEntries),
+    sourceBounds: null,
+  };
 }
 
 async function runImageOcr(buffer: Buffer, widthHint?: number, heightHint?: number) {
@@ -1218,62 +3945,558 @@ async function runImageOcr(buffer: Buffer, widthHint?: number, heightHint?: numb
 export async function importTablesFromPlanFile(
   file: File,
   existingTableCount: number,
+  hints?: PlanImportHints,
+  debugContext?: PlanImportDebugContext,
 ) {
+  assertImportNotCancelled(debugContext);
   const bytes = Buffer.from(await file.arrayBuffer());
   const lowercaseName = file.name.toLowerCase();
   const mimeType = file.type.toLowerCase();
 
-  if (mimeType.includes("json") || lowercaseName.endsWith(".json")) {
-    const text = await parseTextLikeFile(bytes);
-    const entries = parseJsonEntries(text);
-    return entriesToImportedTables(entries, existingTableCount);
+  logPlanImport(debugContext, "file.received", {
+    fileName: file.name,
+    mimeType,
+    size: file.size,
+    existingTableCount,
+  });
+
+  if (!mimeType.startsWith("image/")) {
+    logPlanImport(debugContext, "file.rejected", {
+      reason: "non_image_format",
+      mimeType,
+      fileName: file.name,
+    });
+    throw new Error("El importador de planos solo admite imagenes por ahora.");
   }
+
+  logPlanImport(debugContext, "file.branch.image");
+  logPlanImport(debugContext, "image.geometry.attempt");
+  const geometricLayout = await withTimeout(
+    detectTableLayoutFromImageGeometry(bytes, debugContext),
+    IMAGE_GEOMETRY_TIMEOUT_MS,
+    "image geometry detection",
+  ).catch((error) => {
+    logPlanImport(debugContext, "image.geometry.failed", serializeImportError(error));
+    return null;
+  });
+  assertImportNotCancelled(debugContext);
+  if (geometricLayout && geometricLayout.tables.length >= 12) {
+    const geometryBounds = getGeometryBounds(geometricLayout.tables);
+    const geometryFocusBuffer =
+      geometryBounds &&
+      geometricLayout.sourceBounds.width > 0 &&
+      geometricLayout.sourceBounds.height > 0
+        ? await cropBufferToRegion(
+            bytes,
+            clampCropRegion(
+              {
+                x: geometryBounds.minX,
+                y: geometryBounds.minY,
+                width: geometryBounds.maxX - geometryBounds.minX,
+                height: geometryBounds.maxY - geometryBounds.minY,
+              },
+              geometricLayout.sourceBounds.width,
+              geometricLayout.sourceBounds.height,
+            ),
+          )
+        : bytes;
+    const geometryFocusImage = await bufferToPngDataUrl(
+      geometryFocusBuffer,
+      mimeType || "image/png",
+    );
+    const geometryContactSheet = await buildGeometryContactSheet(bytes, geometricLayout, "original");
+    const geometryContactSheetImage = geometryContactSheet
+      ? await bufferToPngDataUrl(geometryContactSheet.buffer, "image/png")
+      : null;
+    const geometryThresholdSheet = await buildGeometryContactSheet(bytes, geometricLayout, "threshold");
+    const geometryThresholdSheetImage = geometryThresholdSheet
+      ? await bufferToPngDataUrl(geometryThresholdSheet.buffer, "image/png")
+      : null;
+
+    let orderedAiLabels = await callOpenAIOrderedLabelReader({
+      sourceLabel: "imagen-zona-mesas",
+      hints,
+      debugContext,
+      inputItems: [
+        ...(geometryContactSheetImage
+          ? [
+              {
+                type: "input_text" as const,
+                text: `La primera imagen es un mosaico de recortes individuales de mesas ordenadas por posicion: de izquierda a derecha y de arriba a abajo. Cada recorte tiene una etiqueta Pos N fuera de la mesa. La segunda imagen, si aparece, es el mismo mosaico en alto contraste para distinguir mejor numeros como 5, 6, 7, 8, 9 y 10. Usa esos mosaicos como fuente principal para leer M:x y S:x.`,
+              },
+              {
+                type: "input_image" as const,
+                image_url: geometryContactSheetImage.dataUrl,
+                detail: "high" as const,
+              },
+              ...(geometryThresholdSheetImage
+                ? [
+                    {
+                      type: "input_image" as const,
+                      image_url: geometryThresholdSheetImage.dataUrl,
+                      detail: "high" as const,
+                    },
+                  ]
+                : []),
+            ]
+          : []),
+        {
+          type: "input_image",
+          image_url: geometryFocusImage.dataUrl,
+          detail: "high",
+        },
+      ],
+    }).catch((error) => {
+      logPlanImport(debugContext, "image.ordered_labels.failed", serializeImportError(error));
+      return null;
+    });
+
+    const candidateLabelSets: AiOrderedPlanTable[][] = orderedAiLabels ? [orderedAiLabels] : [];
+    const expectedTableMismatch =
+      typeof hints?.expectedTableCount === "number" &&
+      orderedAiLabels &&
+      orderedAiLabels.length !== hints.expectedTableCount;
+    const expectedChairMismatch =
+      typeof hints?.expectedChairTotal === "number" &&
+      orderedAiLabels &&
+      getChairTotal(orderedAiLabels) !== hints.expectedChairTotal;
+
+    if ((expectedTableMismatch || expectedChairMismatch) && geometricLayout.tables.length > 0) {
+      logPlanImport(debugContext, "image.ordered_labels.retrying_with_hints", {
+        previousCount: orderedAiLabels?.length ?? 0,
+        previousChairTotal: orderedAiLabels ? getChairTotal(orderedAiLabels) : 0,
+        expectedTableCount: hints?.expectedTableCount ?? null,
+        expectedChairTotal: hints?.expectedChairTotal ?? null,
+      });
+
+      const retriedOrderedLabels = await callOpenAIOrderedLabelReader({
+        sourceLabel: "imagen-zona-mesas-reintento",
+        hints,
+        forceExactHints: true,
+        reviewContext:
+          orderedAiLabels && orderedAiLabels.length > 0
+            ? `Tu lectura anterior fue esta:\n${serializeOrderedLabels(orderedAiLabels)}\nEsa lectura suma ${getChairTotal(orderedAiLabels)} sillas. Corrige solo las mesas equivocadas para que el resultado final cuadre exactamente con las pistas dadas, manteniendo el orden visual real.`
+            : undefined,
+        debugContext,
+        inputItems: [
+          ...(geometryContactSheetImage
+            ? [
+                {
+                  type: "input_text" as const,
+                  text: `La primera imagen es un mosaico ordenado de mesas individuales con etiqueta Pos N. Corrige solo las posiciones dudosas y mantén estrictamente ese orden de lectura.`,
+                },
+                {
+                  type: "input_image" as const,
+                  image_url: geometryContactSheetImage.dataUrl,
+                  detail: "high" as const,
+                },
+                ...(geometryThresholdSheetImage
+                  ? [
+                      {
+                        type: "input_image" as const,
+                        image_url: geometryThresholdSheetImage.dataUrl,
+                        detail: "high" as const,
+                      },
+                    ]
+                  : []),
+              ]
+            : []),
+          {
+            type: "input_image",
+            image_url: geometryFocusImage.dataUrl,
+            detail: "high",
+          },
+        ],
+      }).catch((error) => {
+        logPlanImport(debugContext, "image.ordered_labels.retry_failed", serializeImportError(error));
+        return null;
+      });
+
+      if (retriedOrderedLabels && retriedOrderedLabels.length > 0) {
+        candidateLabelSets.push(retriedOrderedLabels);
+      }
+
+      const followUpOrderedLabels = await callOpenAIOrderedLabelReader({
+        sourceLabel: "imagen-zona-mesas-revision-final",
+        hints,
+        forceExactHints: true,
+        reviewContext:
+          candidateLabelSets.length > 0
+            ? `Tienes estas lecturas previas candidatas:\n\nCandidata 1:\n${serializeOrderedLabels(candidateLabelSets[0])}\nSuma=${getChairTotal(candidateLabelSets[0])}\n${
+                candidateLabelSets[1]
+                  ? `\nCandidata 2:\n${serializeOrderedLabels(candidateLabelSets[1])}\nSuma=${getChairTotal(candidateLabelSets[1])}\n`
+                  : ""
+              }\nDevuelve la mejor version final que respete el orden visual y cuadre exactamente con las pistas esperadas.`
+            : undefined,
+        debugContext,
+        inputItems: [
+          ...(geometryContactSheetImage
+            ? [
+                {
+                  type: "input_text" as const,
+                  text: `La primera imagen es el mosaico definitivo de recortes de mesas en orden Pos N. Prioriza esa imagen sobre el plano general para leer M:x y S:x correctamente.`,
+                },
+                {
+                  type: "input_image" as const,
+                  image_url: geometryContactSheetImage.dataUrl,
+                  detail: "high" as const,
+                },
+                ...(geometryThresholdSheetImage
+                  ? [
+                      {
+                        type: "input_image" as const,
+                        image_url: geometryThresholdSheetImage.dataUrl,
+                        detail: "high" as const,
+                      },
+                    ]
+                  : []),
+              ]
+            : []),
+          {
+            type: "input_image",
+            image_url: geometryFocusImage.dataUrl,
+            detail: "high",
+          },
+        ],
+      }).catch((error) => {
+        logPlanImport(debugContext, "image.ordered_labels.final_retry_failed", serializeImportError(error));
+        return null;
+      });
+
+      if (followUpOrderedLabels && followUpOrderedLabels.length > 0) {
+        candidateLabelSets.push(followUpOrderedLabels);
+      }
+
+      orderedAiLabels =
+        [...candidateLabelSets].sort(
+          (a, b) =>
+            scoreOrderedLabelCandidate(a, hints, geometricLayout.tables.length) -
+            scoreOrderedLabelCandidate(b, hints, geometricLayout.tables.length),
+        )[0] ?? orderedAiLabels;
+    }
+    assertImportNotCancelled(debugContext);
+
+    if (orderedAiLabels && orderedAiLabels.length >= Math.max(24, Math.floor(geometricLayout.tables.length * 0.7))) {
+      const mergedGeometryLabels = mergeGeometryWithOrderedLabels(
+        geometricLayout.tables,
+        orderedAiLabels,
+      );
+      const mergedGeometryLabelsWithOcrChairs = await recoverChairCountsFromGeometryLayout(
+        bytes,
+        geometricLayout,
+        mergedGeometryLabels,
+        hints,
+        debugContext,
+      ).catch((error) => {
+        logPlanImport(debugContext, "image.chair_ocr.failed", serializeImportError(error));
+        return mergedGeometryLabels;
+      });
+        logPlanImport(debugContext, "file.branch.image.completed", {
+          strategy: "geometry_with_ordered_ai_labels_and_paddle_chairs",
+          geometryEntryCount: geometricLayout.tables.length,
+          orderedLabelCount: orderedAiLabels.length,
+        });
+      return entriesToImportedTables(
+        applyHintGridLayout(mergedGeometryLabelsWithOcrChairs, hints),
+        existingTableCount,
+        hints?.expectedRowCount && hints?.expectedColumnCount
+          ? undefined
+          : geometricLayout.sourceBounds,
+      );
+    }
+
+    logPlanImport(debugContext, "image.geometry_ocr.attempt", {
+      geometryEntryCount: geometricLayout.tables.length,
+    });
+    const geometricLabels = await withTimeout(
+      readLabelsFromDetectedImageLayout(bytes, geometricLayout, debugContext),
+      IMAGE_GEOMETRY_OCR_TIMEOUT_MS,
+      "image geometry OCR",
+    ).catch((error) => {
+      logPlanImport(debugContext, "image.geometry_ocr.failed", serializeImportError(error));
+      return [] as MesaSillaPair[];
+    });
+
+    if (geometricLabels.length >= Math.max(18, Math.floor(geometricLayout.tables.length * 0.55))) {
+      logPlanImport(debugContext, "file.branch.image.completed", {
+        strategy: "geometry_primary",
+        geometryEntryCount: geometricLayout.tables.length,
+        recognizedLabels: geometricLabels.length,
+      });
+      return entriesToImportedTables(
+        applyHintGridLayout(geometricLabels, hints),
+        existingTableCount,
+        hints?.expectedRowCount && hints?.expectedColumnCount
+          ? undefined
+          : geometricLayout.sourceBounds,
+      );
+    }
+  }
+
+  const advancedVisionLayout = await withTimeout(
+    runAdvancedPlanVision(bytes, hints, debugContext),
+    IMAGE_ADVANCED_VISION_TIMEOUT_MS,
+    "image advanced vision",
+  ).catch((error) => {
+    logPlanImport(debugContext, "image.advanced.failed", serializeImportError(error));
+    return null;
+  });
+  assertImportNotCancelled(debugContext);
 
   if (
-    mimeType.includes("spreadsheet") ||
-    mimeType.includes("csv") ||
-    lowercaseName.endsWith(".xlsx") ||
-    lowercaseName.endsWith(".xls") ||
-    lowercaseName.endsWith(".csv")
+    advancedVisionLayout &&
+    advancedVisionLayout.tables.length >=
+      Math.max(6, Math.floor((hints?.expectedTableCount ?? 12) * 0.55))
   ) {
-    const result = await parseSpreadsheetFile(bytes);
-    return entriesToImportedTables(result, existingTableCount);
-  }
+    let advancedTables: MesaSillaPair[] = advancedVisionLayout.tables;
+    const advancedDetectedLayout: DetectedImageLayout | null =
+      advancedVisionLayout.sourceBounds
+        ? {
+            tables: advancedVisionLayout.tables,
+            sourceBounds: {
+              width: advancedVisionLayout.sourceBounds.width,
+              height: advancedVisionLayout.sourceBounds.height,
+            },
+            nearestDistance: estimateNearestNeighborDistance(advancedVisionLayout.tables),
+          }
+        : null;
 
-  if (
-    mimeType.includes("wordprocessingml") ||
-    lowercaseName.endsWith(".docx")
-  ) {
-    const text = await parseDocxFile(bytes);
-    const entries = parseGenericMesaSillaText(text);
-    return entriesToImportedTables(entries, existingTableCount);
-  }
+    if (advancedDetectedLayout) {
+      const advancedFocusBounds = getGeometryBounds(advancedDetectedLayout.tables);
+      const advancedFocusBuffer =
+        advancedFocusBounds &&
+        advancedDetectedLayout.sourceBounds.width > 0 &&
+        advancedDetectedLayout.sourceBounds.height > 0
+          ? await cropBufferToRegion(
+              bytes,
+              clampCropRegion(
+                {
+                  x: advancedFocusBounds.minX,
+                  y: advancedFocusBounds.minY,
+                  width: advancedFocusBounds.maxX - advancedFocusBounds.minX,
+                  height: advancedFocusBounds.maxY - advancedFocusBounds.minY,
+                },
+                advancedDetectedLayout.sourceBounds.width,
+                advancedDetectedLayout.sourceBounds.height,
+              ),
+            )
+          : bytes;
+      const advancedFocusImage = await bufferToPngDataUrl(
+        advancedFocusBuffer,
+        mimeType || "image/png",
+      );
+      const advancedContactSheet = await buildGeometryContactSheet(
+        bytes,
+        advancedDetectedLayout,
+        "original",
+      );
+      const advancedThresholdSheet = await buildGeometryContactSheet(
+        bytes,
+        advancedDetectedLayout,
+        "threshold",
+      );
+      const advancedContactSheetImage = advancedContactSheet
+        ? await bufferToPngDataUrl(advancedContactSheet.buffer, "image/png")
+        : null;
+      const advancedThresholdSheetImage = advancedThresholdSheet
+        ? await bufferToPngDataUrl(advancedThresholdSheet.buffer, "image/png")
+        : null;
 
-  if (mimeType.includes("pdf") || lowercaseName.endsWith(".pdf")) {
-    const result = await parsePdfFile(bytes);
+      const orderedAdvancedLabels = await callOpenAIOrderedLabelReader({
+        sourceLabel: "imagen-zona-mesas-avanzada",
+        hints,
+        debugContext,
+        inputItems: [
+          ...(advancedContactSheetImage
+            ? [
+                {
+                  type: "input_text" as const,
+                  text: `La primera imagen es un mosaico de recortes individuales de mesas ordenadas por posicion visual. Usa ese mosaico como fuente principal para leer M:x y S:x. La segunda imagen, si aparece, es el mismo mosaico en alto contraste.`,
+                },
+                {
+                  type: "input_image" as const,
+                  image_url: advancedContactSheetImage.dataUrl,
+                  detail: "high" as const,
+                },
+                ...(advancedThresholdSheetImage
+                  ? [
+                      {
+                        type: "input_image" as const,
+                        image_url: advancedThresholdSheetImage.dataUrl,
+                        detail: "high" as const,
+                      },
+                    ]
+                  : []),
+              ]
+            : []),
+          {
+            type: "input_image",
+            image_url: advancedFocusImage.dataUrl,
+            detail: "high",
+          },
+        ],
+      }).catch((error) => {
+        logPlanImport(debugContext, "image.advanced.ordered_labels_failed", serializeImportError(error));
+        return null;
+      });
+
+      if (orderedAdvancedLabels && orderedAdvancedLabels.length > 0) {
+        const mergedAdvancedLabels = mergeGeometryWithOrderedLabels(
+          advancedDetectedLayout.tables,
+          orderedAdvancedLabels,
+        ).map((entry, index) => ({
+          ...entry,
+          x: advancedDetectedLayout.tables[index]?.x ?? entry.x ?? 0,
+          y: advancedDetectedLayout.tables[index]?.y ?? entry.y ?? 0,
+        }));
+        advancedTables = await recoverChairCountsFromGeometryLayout(
+          bytes,
+          advancedDetectedLayout,
+          mergedAdvancedLabels,
+          hints,
+          debugContext,
+        ).catch((error) => {
+          logPlanImport(debugContext, "image.advanced.chair_ocr_failed", serializeImportError(error));
+          return mergedAdvancedLabels;
+        });
+      } else {
+        const advancedAiSupport = await importPlanWithOpenAIFromImage(
+          bytes,
+          mimeType,
+          debugContext,
+        ).catch((error) => {
+          logPlanImport(debugContext, "image.advanced.openai_failed", serializeImportError(error));
+          return null;
+        });
+
+        if (advancedAiSupport?.tables.length) {
+          const mergedAdvancedTables = mergeExactChairCounts(
+            advancedTables,
+            advancedAiSupport.tables,
+          ).map((entry, index) => ({
+            ...entry,
+            x: advancedTables[index]?.x ?? entry.x ?? 0,
+            y: advancedTables[index]?.y ?? entry.y ?? 0,
+          }));
+          const advancedCandidates = [advancedTables, mergedAdvancedTables];
+          advancedTables = [...advancedCandidates].sort((a, b) => {
+            const expectedChairTotal = hints?.expectedChairTotal;
+            if (typeof expectedChairTotal !== "number") {
+              return 0;
+            }
+
+            return (
+              Math.abs(getChairTotal(a) - expectedChairTotal) -
+              Math.abs(getChairTotal(b) - expectedChairTotal)
+            );
+          })[0];
+        }
+      }
+    }
+
+    logPlanImport(debugContext, "file.branch.image.completed", {
+      strategy: "advanced_paddle_structure_openai",
+      entryCount: advancedTables.length,
+      advancedMeta: advancedVisionLayout.meta ?? null,
+    });
+
     return entriesToImportedTables(
-      result.tables,
+      applyHintGridLayout(advancedTables, hints),
       existingTableCount,
-      result.sourceBounds ?? undefined,
+      hints?.expectedRowCount && hints?.expectedColumnCount
+        ? undefined
+        : advancedVisionLayout.sourceBounds
+        ? {
+            ...advancedVisionLayout.sourceBounds,
+            preferRegularized: true,
+          }
+        : undefined,
     );
   }
 
-  if (mimeType.includes("svg") || lowercaseName.endsWith(".svg")) {
-    const svgText = await parseTextLikeFile(bytes);
-    const result = parseSvgFile(svgText);
+  const ocrResult = await extractOcrPairsFromBuffer(bytes, debugContext);
+  assertImportNotCancelled(debugContext);
+  const aiResult = await importPlanWithOpenAIFromImage(bytes, mimeType, debugContext).catch((error) => {
+    logPlanImport(debugContext, "image.openai.failed", serializeImportError(error));
+    return null;
+  });
+
+  if (aiResult?.tables.length && shouldPreferAiLayoutForImage(ocrResult.tables, aiResult.tables)) {
+    const aiLabelAlignedTables = mergeAiLayoutWithOrderedLabels(aiResult.tables, ocrResult.tables);
+    const aiRecoveredTables = await recoverMesaSillaLabelsFromAiLayout(
+      bytes,
+      aiLabelAlignedTables,
+      aiResult.sourceBounds,
+      debugContext,
+    );
+    logPlanImport(debugContext, "file.branch.image.completed", {
+      strategy: "ai_preferred",
+      ocrEntryCount: ocrResult.tables.length,
+      aiEntryCount: aiResult.tables.length,
+      alignedAiEntryCount: aiLabelAlignedTables.length,
+      recoveredAiEntryCount: aiRecoveredTables.length,
+    });
     return entriesToImportedTables(
-      result.tables,
+      applyHintGridLayout(aiRecoveredTables, hints),
       existingTableCount,
-      result.sourceBounds ?? undefined,
+      hints?.expectedRowCount && hints?.expectedColumnCount
+        ? undefined
+        : aiResult.sourceBounds
+        ? {
+            ...aiResult.sourceBounds,
+            preferRegularized: true,
+          }
+        : undefined,
     );
   }
 
-  if (mimeType.startsWith("image/")) {
-    const ocrTables = await runImageOcr(bytes);
-    return ocrTables;
+  if (ocrResult.tables.length >= 6) {
+    const mergedTables = aiResult?.tables.length && shouldUseAiCountsForImage(ocrResult.tables, aiResult.tables)
+      ? mergeExactChairCounts(ocrResult.tables, aiResult.tables)
+      : ocrResult.tables;
+    logPlanImport(debugContext, "file.branch.image.completed", {
+      strategy:
+        aiResult?.tables.length && shouldUseAiCountsForImage(ocrResult.tables, aiResult.tables)
+          ? "ocr_with_ai_counts"
+          : "ocr_only",
+      entryCount: mergedTables.length,
+    });
+    return entriesToImportedTables(
+      applyHintGridLayout(mergedTables, hints),
+      existingTableCount,
+      hints?.expectedRowCount && hints?.expectedColumnCount
+        ? undefined
+        : ocrResult.sourceBounds
+        ? {
+            ...ocrResult.sourceBounds,
+            preferRegularized: true,
+          }
+        : undefined,
+    );
   }
 
-  const text = await parseTextLikeFile(bytes);
-  const entries = parseGenericMesaSillaText(text);
-  return entriesToImportedTables(entries, existingTableCount);
+  if (aiResult) {
+    logPlanImport(debugContext, "file.branch.image.completed", {
+      strategy: "ai_only",
+      entryCount: aiResult.tables.length,
+    });
+    return entriesToImportedTables(
+      applyHintGridLayout(aiResult.tables, hints),
+      existingTableCount,
+      hints?.expectedRowCount && hints?.expectedColumnCount
+        ? undefined
+        : aiResult.sourceBounds
+        ? {
+            ...aiResult.sourceBounds,
+            preferRegularized: true,
+          }
+        : undefined,
+    );
+  }
+
+  logPlanImport(debugContext, "file.branch.image.completed", {
+    strategy: "empty",
+    entryCount: 0,
+  });
+  return [];
 }

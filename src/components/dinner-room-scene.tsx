@@ -13,6 +13,7 @@ import {
   ROOM_LAYOUT_HEIGHT,
   ROOM_LAYOUT_WIDTH,
   ROOM_WORLD_SCALE,
+  getEventTitleFootprint,
   getEventBounds,
   roomPointToWorld,
 } from "@/lib/room-layout";
@@ -59,21 +60,33 @@ function EventLabel({
   centerZ: number;
 }) {
   const roomWorldWidth = ROOM_LAYOUT_WIDTH * ROOM_WORLD_SCALE;
+  const footprint = getEventTitleFootprint(evento.nombre);
 
   return (
-    <Text
-      position={[centerX, -0.772, centerZ]}
-      rotation={[-Math.PI / 2, 0, 0]}
-      fontSize={0.82}
-      color="#efe3cb"
-      anchorX="center"
-      anchorY="middle"
-      maxWidth={roomWorldWidth * 0.7}
-      outlineWidth={0.024}
-      outlineColor="#40261f"
-    >
-      {evento.nombre}
-    </Text>
+    <group position={[centerX, 0, centerZ]}>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.782, 0]} receiveShadow>
+        <planeGeometry
+          args={[
+            footprint.safeWidth * ROOM_WORLD_SCALE,
+            footprint.safeHeight * ROOM_WORLD_SCALE,
+          ]}
+        />
+        <meshStandardMaterial color="#6f4f3a" transparent opacity={0.18} roughness={0.95} />
+      </mesh>
+      <Text
+        position={[0, -0.772, 0]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        fontSize={footprint.worldFontSize}
+        color="#efe3cb"
+        anchorX="center"
+        anchorY="middle"
+        maxWidth={roomWorldWidth * footprint.maxWidthRatio}
+        outlineWidth={0.024}
+        outlineColor="#40261f"
+      >
+        {footprint.text}
+      </Text>
+    </group>
   );
 }
 
@@ -95,6 +108,7 @@ function SceneContent(props: DinnerRoomSceneProps) {
   const bounds = useMemo(() => getEventBounds(mesas), [mesas]);
   const roomWorldWidth = ROOM_LAYOUT_WIDTH * ROOM_WORLD_SCALE;
   const roomWorldDepth = ROOM_LAYOUT_HEIGHT * ROOM_WORLD_SCALE;
+  const titleAnchor = roomPointToWorld(ROOM_LAYOUT_WIDTH / 2, ROOM_LAYOUT_HEIGHT / 2);
   const nextTargetPoint = roomPointToWorld(bounds.centerX, bounds.centerY);
   const spread = Math.max(bounds.width * ROOM_WORLD_SCALE, bounds.height * ROOM_WORLD_SCALE);
   const hallWidth = Math.max(bounds.width * ROOM_WORLD_SCALE + 8, roomWorldWidth * 0.46);
@@ -209,11 +223,12 @@ function SceneContent(props: DinnerRoomSceneProps) {
         depth={sceneAnchor.hallDepth}
         centerX={targetPoint.x}
         centerZ={targetPoint.z}
+        eventName={props.evento.nombre}
       />
       <EventLabel
         evento={props.evento}
-        centerX={targetPoint.x}
-        centerZ={targetPoint.z}
+        centerX={titleAnchor.x}
+        centerZ={titleAnchor.z}
       />
 
       {mesas.map((mesa) => {

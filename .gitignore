@@ -41,3 +41,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local plan importer runtime/temp data
+.plan-import-runtime/
+.tmp-plan-import/
+stdout-plan.json
+.plan-import-feedback/staged/
