@@ -1,0 +1,271 @@
+{
+  "traceId": "1eb32729",
+  "eventoId": "3f686641-66f0-470d-9309-f05d89350ac6",
+  "eventName": "aaa",
+  "fileName": "PLANO NUMERADO PRUEBA1.png",
+  "hints": {
+    "expectedTableCount": 42,
+    "expectedRowCount": 7,
+    "expectedColumnCount": 6,
+    "expectedChairTotal": 302,
+    "eventName": "aaa"
+  },
+  "importedTables": [
+    {
+      "numero": 37,
+      "chairCount": 8,
+      "posX": 420,
+      "posY": 726
+    },
+    {
+      "numero": 12,
+      "chairCount": 7,
+      "posX": 1092,
+      "posY": 726
+    },
+    {
+      "numero": 25,
+      "chairCount": 10,
+      "posX": 1764,
+      "posY": 726
+    },
+    {
+      "numero": 4,
+      "chairCount": 6,
+      "posX": 2436,
+      "posY": 726
+    },
+    {
+      "numero": 31,
+      "chairCount": 9,
+      "posX": 3108,
+      "posY": 726
+    },
+    {
+      "numero": 18,
+      "chairCount": 5,
+      "posX": 3780,
+      "posY": 726
+    },
+    {
+      "numero": 8,
+      "chairCount": 5,
+      "posX": 420,
+      "posY": 1036
+    },
+    {
+      "numero": 41,
+      "chairCount": 9,
+      "posX": 1092,
+      "posY": 1036
+    },
+    {
+      "numero": 22,
+      "chairCount": 6,
+      "posX": 1764,
+      "posY": 1036
+    },
+    {
+      "numero": 2,
+      "chairCount": 8,
+      "posX": 2436,
+      "posY": 1036
+    },
+    {
+      "numero": 35,
+      "chairCount": 7,
+      "posX": 3108,
+      "posY": 1036
+    },
+    {
+      "numero": 14,
+      "chairCount": 10,
+      "posX": 3780,
+      "posY": 1036
+    },
+    {
+      "numero": 29,
+      "chairCount": 6,
+      "posX": 420,
+      "posY": 1346
+    },
+    {
+      "numero": 1,
+      "chairCount": 7,
+      "posX": 1092,
+      "posY": 1346
+    },
+    {
+      "numero": 16,
+      "chairCount": 5,
+      "posX": 1764,
+      "posY": 1346
+    },
+    {
+      "numero": 33,
+      "chairCount": 8,
+      "posX": 2436,
+      "posY": 1346
+    },
+    {
+      "numero": 10,
+      "chairCount": 6,
+      "posX": 3108,
+      "posY": 1346
+    },
+    {
+      "numero": 24,
+      "chairCount": 9,
+      "posX": 3780,
+      "posY": 1346
+    },
+    {
+      "numero": 26,
+      "chairCount": 5,
+      "posX": 420,
+      "posY": 1654
+    },
+    {
+      "numero": 19,
+      "chairCount": 8,
+      "posX": 1092,
+      "posY": 1654
+    },
+    {
+      "numero": 42,
+      "chairCount": 7,
+      "posX": 1764,
+      "posY": 1654
+    },
+    {
+      "numero": 6,
+      "chairCount": 10,
+      "posX": 2436,
+      "posY": 1654
+    },
+    {
+      "numero": 30,
+      "chairCount": 6,
+      "posX": 3108,
+      "posY": 1654
+    },
+    {
+      "numero": 3,
+      "chairCount": 7,
+      "posX": 3780,
+      "posY": 1654
+    },
+    {
+      "numero": 32,
+      "chairCount": 7,
+      "posX": 420,
+      "posY": 1964
+    },
+    {
+      "numero": 5,
+      "chairCount": 6,
+      "posX": 1092,
+      "posY": 1964
+    },
+    {
+      "numero": 23,
+      "chairCount": 9,
+      "posX": 1764,
+      "posY": 1964
+    },
+    {
+      "numero": 11,
+      "chairCount": 5,
+      "posX": 2436,
+      "posY": 1964
+    },
+    {
+      "numero": 40,
+      "chairCount": 8,
+      "posX": 3108,
+      "posY": 1964
+    },
+    {
+      "numero": 9,
+      "chairCount": 7,
+      "posX": 3780,
+      "posY": 1964
+    },
+    {
+      "numero": 27,
+      "chairCount": 5,
+      "posX": 420,
+      "posY": 2274
+    },
+    {
+      "numero": 38,
+      "chairCount": 9,
+      "posX": 1092,
+      "posY": 2274
+    },
+    {
+      "numero": 17,
+      "chairCount": 6,
+      "posX": 1764,
+      "posY": 2274
+    },
+    {
+      "numero": 20,
+      "chairCount": 10,
+      "posX": 2436,
+      "posY": 2274
+    },
+    {
+      "numero": 13,
+      "chairCount": 7,
+      "posX": 3108,
+      "posY": 2274
+    },
+    {
+      "numero": 21,
+      "chairCount": 8,
+      "posX": 3780,
+      "posY": 2274
+    },
+    {
+      "numero": 36,
+      "chairCount": 8,
+      "posX": 420,
+      "posY": 2584
+    },
+    {
+      "numero": 7,
+      "chairCount": 5,
+      "posX": 1092,
+      "posY": 2584
+    },
+    {
+      "numero": 15,
+      "chairCount": 6,
+      "posX": 1764,
+      "posY": 2584
+    },
+    {
+      "numero": 28,
+      "chairCount": 7,
+      "posX": 2436,
+      "posY": 2584
+    },
+    {
+      "numero": 34,
+      "chairCount": 9,
+      "posX": 3108,
+      "posY": 2584
+    },
+    {
+      "numero": 39,
+      "chairCount": 6,
+      "posX": 3780,
+      "posY": 2584
+    }
+  ],
+  "stagedAt": "2026-05-18T12:58:20.297Z",
+  "imagePath": "C:\\Users\\Administrador\\Documents\\PROYECTO SALA DE CENAS MIGUEL\\sala-cenas-interactiva\\.plan-import-feedback\\validated\\2026-05-18-1eb32729\\PLANO NUMERADO PRUEBA1.png",
+  "imageSha256": "17b1a8c73892b98c09ebf3670f60688124c24ae671ad086bc41c470bf4b48bd4",
+  "validatedAt": "2026-05-18T13:00:05.381Z"
+}

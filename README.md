@@ -41,9 +41,16 @@ El proyecto usa estas variables en `.env.local`:
 ```env
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
+SUPABASE_SECRET_KEY=
+ADMIN_ACCESS_PASSWORD=
+OPENAI_API_KEY=
+OPENAI_IMPORT_MODEL=gpt-4.1
 ```
 
 Hay una plantilla en `.env.example`.
+
+Si `OPENAI_API_KEY` esta configurada, el importador de planos usa GPT como capa principal
+para imagenes y PDFs. Si no existe o falla, cae al importador determinista/fallback actual.
 
 ## Base de datos y Supabase
 

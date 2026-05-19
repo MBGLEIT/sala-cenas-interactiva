@@ -1,16 +1,18 @@
 "use client";
 
-import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import AdminTableLayoutEditor from "@/components/admin-table-layout-editor";
+import DinnerRoomScene from "@/components/dinner-room-scene";
 import ToastStack, { ToastItem } from "@/components/toast-stack";
 import {
   AdminEventSummary,
   AdminPanelData,
   AdminReservationRow,
 } from "@/lib/admin-panel";
+import { EventoSala } from "@/lib/dinner-room";
 import { getNextMesaPosition } from "@/lib/room-layout";
 import { supabase } from "@/lib/supabase";
 
@@ -23,9 +25,38 @@ type AdminDashboardProps = {
 type JsonResponse = {
   error?: string;
   message?: string;
+  cancelled?: boolean;
   eventoId?: string;
   mesaId?: string;
+  traceId?: string;
+  eventoNombre?: string | null;
+  mesaIds?: string[];
+  importedTables?: Array<{
+    numero: number;
+    chairCount: number;
+    posX: number;
+    posY: number;
+  }>;
 };
+
+type ImportTraceLogEntry = {
+  id: string;
+  at: string;
+  level: "info" | "warn" | "error";
+  stage: string;
+  details?: Record<string, unknown>;
+};
+
+type ImportProgressState = {
+  traceId: string;
+  status: "running" | "cancel_requested" | "completed" | "failed" | "cancelled";
+  logs: ImportTraceLogEntry[];
+  expanded: boolean;
+  summary?: string;
+  cancelling: boolean;
+};
+
+type ReimportDialogMode = "choice" | "params" | null;
 
 type MesaCapacityPreset = "8" | "10" | "12" | "custom";
 
@@ -36,8 +67,53 @@ type ChairRow = {
   numero: number;
 };
 
+type ImportReviewState = {
+  traceId: string;
+  eventoId: string;
+  eventoNombre: string;
+  mesaIds: string[];
+  importedTables: Array<{
+    numero: number;
+    chairCount: number;
+    posX: number;
+    posY: number;
+  }>;
+};
+
+function buildPreviewEvent(review: ImportReviewState): EventoSala {
+  return {
+    id: review.eventoId,
+    nombre: review.eventoNombre,
+    fecha: "",
+    mesas: review.importedTables.map((table) => ({
+      id: `preview-mesa-${table.numero}`,
+      numero: table.numero,
+      pos_x: table.posX,
+      pos_y: table.posY,
+      created_at: "",
+      sillas: Array.from({ length: table.chairCount }, (_, index) => ({
+        id: `preview-silla-${table.numero}-${index + 1}`,
+        numero: index + 1,
+        created_at: "",
+        reservas: [],
+      })),
+    })),
+  };
+}
+
 async function parseJsonResponse(response: Response) {
-  return (await response.json()) as JsonResponse;
+  const contentType = response.headers.get("content-type") ?? "";
+
+  if (contentType.includes("application/json")) {
+    return (await response.json()) as JsonResponse;
+  }
+
+  const rawText = await response.text();
+  return {
+    error:
+      rawText.trim() ||
+      "La respuesta del servidor no se pudo interpretar correctamente.",
+  } satisfies JsonResponse;
 }
 
 function AdminCard({
@@ -153,6 +229,16 @@ function FieldInputClass(disabled?: boolean) {
   }`;
 }
 
+function formatImportLogEntry(entry: ImportTraceLogEntry) {
+  const time = new Date(entry.at).toLocaleTimeString("es-ES", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  const details = entry.details ? ` ${JSON.stringify(entry.details)}` : "";
+  return `[${time}] ${entry.stage}${details}`;
+}
+
 export default function AdminDashboard({
   events,
   selectedEventId,
@@ -192,6 +278,20 @@ export default function AdminDashboard({
   const [asistenteSeleccionadoId, setAsistenteSeleccionadoId] = useState("");
   const [sillaSeleccionadaId, setSillaSeleccionadaId] = useState("");
   const [planFile, setPlanFile] = useState<File | null>(null);
+  const [planExpectedTableCount, setPlanExpectedTableCount] = useState("");
+  const [planExpectedRowCount, setPlanExpectedRowCount] = useState("");
+  const [planExpectedColumnCount, setPlanExpectedColumnCount] = useState("");
+  const [planExpectedChairTotal, setPlanExpectedChairTotal] = useState("");
+  const [importReview, setImportReview] = useState<ImportReviewState | null>(null);
+  const [showImportRejectActions, setShowImportRejectActions] = useState(false);
+  const [importProgress, setImportProgress] = useState<ImportProgressState | null>(null);
+  const [reimportDialogMode, setReimportDialogMode] = useState<ReimportDialogMode>(null);
+  const [reimportFile, setReimportFile] = useState<File | null>(null);
+  const [reimportExpectedTableCount, setReimportExpectedTableCount] = useState("");
+  const [reimportExpectedRowCount, setReimportExpectedRowCount] = useState("");
+  const [reimportExpectedColumnCount, setReimportExpectedColumnCount] = useState("");
+  const [reimportExpectedChairTotal, setReimportExpectedChairTotal] = useState("");
+  const importAbortRef = useRef<AbortController | null>(null);
 
   const asistentesSinReserva = useMemo(
     () =>
@@ -211,6 +311,10 @@ export default function AdminDashboard({
           Boolean(reserva.observaciones?.trim()),
       ).length,
     [panelData?.reservas],
+  );
+  const importReviewPreviewEvent = useMemo(
+    () => (importReview ? buildPreviewEvent(importReview) : null),
+    [importReview],
   );
 
   const allChairs = useMemo<ChairRow[]>(
@@ -265,18 +369,21 @@ export default function AdminDashboard({
     ]);
   }
 
-  function scheduleRouterRefresh(delay: number = 350) {
+  const activeImportTraceId = importProgress?.traceId;
+  const activeImportStatus = importProgress?.status;
+
+  const scheduleRouterRefresh = useCallback((delay: number = 350) => {
     window.setTimeout(() => {
       startTransition(() => {
         router.refresh();
       });
     }, delay);
-  }
+  }, [router, startTransition]);
 
-  function scheduleImportRefreshes() {
+  const scheduleImportRefreshes = useCallback(() => {
     scheduleRouterRefresh(700);
     scheduleRouterRefresh(1800);
-  }
+  }, [scheduleRouterRefresh]);
 
   useEffect(() => {
     if (toasts.length === 0) {
@@ -295,6 +402,80 @@ export default function AdminDashboard({
       });
     };
   }, [toasts]);
+
+  useEffect(() => {
+    if (!activeImportTraceId || !activeImportStatus) {
+      return;
+    }
+
+    if (activeImportStatus === "completed" || activeImportStatus === "failed") {
+      return;
+    }
+
+    let cancelled = false;
+
+    const pollTrace = async () => {
+      try {
+        const response = await fetch(
+          `/api/admin/mesas/import-plan/status?traceId=${encodeURIComponent(activeImportTraceId)}`,
+          { cache: "no-store" },
+        );
+
+        if (!response.ok) {
+          return;
+        }
+
+        const snapshot = (await response.json()) as {
+          status: ImportProgressState["status"];
+          logs: ImportTraceLogEntry[];
+          summary?: string;
+          cancelRequested?: boolean;
+        };
+
+        if (cancelled) {
+          return;
+        }
+
+        setImportProgress((current) => {
+          if (!current || current.traceId !== activeImportTraceId) {
+            return current;
+          }
+
+          return {
+            ...current,
+            status: snapshot.status,
+            logs: snapshot.logs ?? current.logs,
+            summary: snapshot.summary ?? current.summary,
+            cancelling: snapshot.status === "cancel_requested" || current.cancelling,
+          };
+        });
+
+        if (snapshot.status === "cancelled") {
+          importAbortRef.current = null;
+          setImportProgress(null);
+          setStatusMessage(snapshot.summary ?? "Importacion cancelada correctamente.");
+          pushToast({
+            tone: "success",
+            title: "Importacion cancelada",
+            description:
+              snapshot.summary ??
+              "La importacion se ha cancelado antes de guardar cambios en el evento.",
+          });
+          scheduleImportRefreshes();
+        }
+      } catch {}
+    };
+
+    void pollTrace();
+    const intervalId = window.setInterval(() => {
+      void pollTrace();
+    }, 900);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [activeImportStatus, activeImportTraceId, scheduleImportRefreshes]);
 
   useEffect(() => {
     if (!selectedEventId) {
@@ -454,7 +635,7 @@ export default function AdminDashboard({
 
   async function runAdminAction(
     endpoint: string,
-    payload: Record<string, string | number>,
+    payload: Record<string, string | number | boolean>,
     successTitle: string,
     onSuccess?: (result: JsonResponse) => void,
   ) {
@@ -648,28 +829,119 @@ export default function AdminDashboard({
     }
   }
 
-  async function handleImportPlan(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    if (!selectedEventId || !planFile) {
-      return;
+  async function runPlanImport(fileToImport: File, hints: {
+    expectedTableCount: string;
+    expectedRowCount: string;
+    expectedColumnCount: string;
+    expectedChairTotal: string;
+  }) {
+    if (!selectedEventId) {
+      return false;
     }
 
     setError("");
     setStatusMessage("");
 
     const formData = new FormData();
+    const clientTraceId = crypto.randomUUID().slice(0, 8);
+    formData.append("clientTraceId", clientTraceId);
     formData.append("eventoId", selectedEventId);
-    formData.append("file", planFile);
+    formData.append("file", fileToImport);
+    if (hints.expectedTableCount.trim()) {
+      formData.append("expectedTableCount", hints.expectedTableCount.trim());
+    }
+    if (hints.expectedRowCount.trim()) {
+      formData.append("expectedRowCount", hints.expectedRowCount.trim());
+    }
+    if (hints.expectedColumnCount.trim()) {
+      formData.append("expectedColumnCount", hints.expectedColumnCount.trim());
+    }
+    if (hints.expectedChairTotal.trim()) {
+      formData.append("expectedChairTotal", hints.expectedChairTotal.trim());
+    }
 
-    const response = await fetch("/api/admin/mesas/import-plan", {
-      method: "POST",
-      body: formData,
+    let response: Response;
+    let result: JsonResponse;
+    const controller = new AbortController();
+    importAbortRef.current = controller;
+    setImportProgress({
+      traceId: clientTraceId,
+      status: "running",
+      logs: [],
+      expanded: false,
+      summary: "Preparando la importacion del plano.",
+      cancelling: false,
     });
 
-    const result = await parseJsonResponse(response);
+    try {
+      response = await fetch("/api/admin/mesas/import-plan", {
+        method: "POST",
+        body: formData,
+        signal: controller.signal,
+      });
+
+      result = await parseJsonResponse(response);
+    } catch (error) {
+      if ((error as Error)?.name === "AbortError") {
+        return;
+      }
+
+      importAbortRef.current = null;
+      setImportProgress(null);
+      const message =
+        "La carga del plano no pudo completarse. El servidor no devolvio una respuesta valida.";
+      setError(message);
+      pushToast({
+        tone: "error",
+        title: "Plano no cargado",
+        description: message,
+      });
+      return false;
+    }
+
+    if (!response) {
+      importAbortRef.current = null;
+      setImportProgress(null);
+      const message =
+        "La carga del plano no pudo completarse. El servidor no devolvio una respuesta valida.";
+      setError(message);
+      pushToast({
+        tone: "error",
+        title: "Plano no cargado",
+        description: message,
+      });
+      return false;
+    }
 
     if (!response.ok) {
+      if (result.cancelled) {
+        importAbortRef.current = null;
+        setImportProgress((current) =>
+          current
+            ? {
+                ...current,
+                status: "cancelled",
+                cancelling: false,
+                summary: result.error ?? "Importacion cancelada correctamente.",
+              }
+            : null,
+        );
+        setStatusMessage(result.error ?? "Importacion cancelada correctamente.");
+        pushToast({
+          tone: "success",
+          title: "Importacion cancelada",
+          description:
+            result.error ??
+            "La importacion se ha cancelado antes de guardar cambios en el evento.",
+        });
+        window.setTimeout(() => {
+          setImportProgress(null);
+        }, 400);
+        return false;
+      }
+
+      importAbortRef.current = null;
+      setImportProgress(null);
       const message = result.error ?? "No se pudo cargar el plano.";
       setError(message);
       pushToast({
@@ -677,18 +949,264 @@ export default function AdminDashboard({
         title: "Plano no cargado",
         description: message,
       });
-      return;
+      return false;
     }
 
     const message = result.message ?? "Plano cargado correctamente.";
+    importAbortRef.current = null;
+    setImportProgress(null);
     setStatusMessage(message);
-    setPlanFile(null);
     pushToast({
       tone: "success",
       title: "Plano cargado",
       description: message,
     });
+    if (result.traceId && result.importedTables?.length) {
+      setImportReview({
+        traceId: result.traceId,
+        eventoId: selectedEventId,
+        eventoNombre: result.eventoNombre ?? panelData?.evento.nombre ?? "Evento",
+        mesaIds: result.mesaIds ?? [],
+        importedTables: result.importedTables,
+      });
+      setShowImportRejectActions(false);
+    } else {
+      setPlanFile(null);
+      setPlanExpectedTableCount("");
+      setPlanExpectedRowCount("");
+      setPlanExpectedColumnCount("");
+      setPlanExpectedChairTotal("");
+    }
     scheduleImportRefreshes();
+    return true;
+  }
+
+  async function handleImportPlan(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!selectedEventId || !planFile) {
+      return;
+    }
+
+    await runPlanImport(planFile, {
+      expectedTableCount: planExpectedTableCount,
+      expectedRowCount: planExpectedRowCount,
+      expectedColumnCount: planExpectedColumnCount,
+      expectedChairTotal: planExpectedChairTotal,
+    });
+  }
+
+  async function handleCancelImport() {
+    if (!importProgress) {
+      return;
+    }
+
+    const traceId = importProgress.traceId;
+    setImportProgress((current) =>
+      current
+        ? {
+            ...current,
+            status: "cancel_requested",
+            cancelling: true,
+            summary:
+              "Cancelando importacion. Espera a que el servidor llegue a un punto seguro para detenerla sin dejar cambios a medias.",
+          }
+        : current,
+    );
+
+    void fetch("/api/admin/mesas/import-plan/cancel", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        keepalive: true,
+        body: JSON.stringify({
+          traceId,
+        }),
+      })
+      .then(async (response) => {
+        const result = await parseJsonResponse(response);
+
+        if (!response.ok) {
+          const message =
+            result.error ??
+            "No se pudo cancelar la importacion desde el servidor.";
+          setError(message);
+          pushToast({
+            tone: "error",
+            title: "Cancelacion no completada",
+            description: message,
+          });
+          setImportProgress(null);
+          scheduleImportRefreshes();
+          return;
+        }
+
+        setStatusMessage(result.message ?? "Importacion cancelada correctamente.");
+        pushToast({
+          tone: "success",
+          title: "Importacion cancelada",
+          description:
+            result.message ??
+            "La importacion se ha cancelado y se han eliminado sus cambios.",
+        });
+        setImportProgress(null);
+        scheduleImportRefreshes();
+      })
+      .catch(() => {
+        setError(
+          "No se pudo contactar con el servidor para cancelar. Si el proceso termina, revisa el plano y borralo desde la ventana de revision.",
+        );
+        pushToast({
+          tone: "error",
+          title: "Cancelacion no confirmada",
+          description:
+            "No se pudo contactar con el servidor para confirmar la cancelacion.",
+        });
+      });
+
+    importAbortRef.current?.abort();
+    importAbortRef.current = null;
+    setImportProgress(null);
+    setStatusMessage("Cancelacion enviada. Se limpiaran los cambios de esta importacion.");
+    pushToast({
+      tone: "success",
+      title: "Cancelacion enviada",
+      description:
+        "La importacion se ha detenido en pantalla y el servidor limpiara cualquier cambio de esa carga.",
+    });
+    scheduleImportRefreshes();
+  }
+
+  async function handleImportReviewAction(
+    action: "confirm" | "dismiss" | "delete_imported",
+    options?: { retry?: boolean },
+  ) {
+    if (!importReview) {
+      return;
+    }
+
+    await completeImportReviewAction(importReview, action, options);
+  }
+
+  async function completeImportReviewAction(
+    review: ImportReviewState,
+    action: "confirm" | "dismiss" | "delete_imported",
+    options?: { retry?: boolean },
+  ) {
+    const response = await fetch("/api/admin/mesas/import-plan/review", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        action,
+        traceId: review.traceId,
+        eventoId: review.eventoId,
+        mesaIds: review.mesaIds,
+      }),
+    });
+
+    const result = await parseJsonResponse(response);
+
+    if (!response.ok) {
+      const message = result.error ?? "No se pudo completar la revision del plano.";
+      setError(message);
+      pushToast({
+        tone: "error",
+        title: "Revision no completada",
+        description: message,
+      });
+      return false;
+    }
+
+    const message = result.message ?? "Revision completada.";
+    setStatusMessage(message);
+    pushToast({
+      tone: "success",
+      title: "Revision completada",
+      description: message,
+    });
+
+    if (action === "confirm" || action === "dismiss") {
+      setPlanFile(null);
+      setPlanExpectedTableCount("");
+      setPlanExpectedRowCount("");
+      setPlanExpectedColumnCount("");
+      setPlanExpectedChairTotal("");
+    }
+
+    if (action === "delete_imported" && !options?.retry) {
+      setPlanFile(null);
+      setPlanExpectedTableCount("");
+      setPlanExpectedRowCount("");
+      setPlanExpectedColumnCount("");
+      setPlanExpectedChairTotal("");
+    }
+
+    setImportReview(null);
+    setShowImportRejectActions(false);
+    setReimportDialogMode(null);
+    scheduleImportRefreshes();
+    return true;
+  }
+
+  function openReimportChoice() {
+    setShowImportRejectActions(false);
+    setReimportDialogMode("choice");
+    setReimportFile(planFile);
+    setReimportExpectedTableCount(planExpectedTableCount);
+    setReimportExpectedRowCount(planExpectedRowCount);
+    setReimportExpectedColumnCount(planExpectedColumnCount);
+    setReimportExpectedChairTotal(planExpectedChairTotal);
+  }
+
+  async function handleReimportWithCurrentInputs() {
+    if (!importReview || !planFile) {
+      return;
+    }
+
+    const previousReview = importReview;
+    const deleted = await completeImportReviewAction(previousReview, "delete_imported", {
+      retry: true,
+    });
+    if (!deleted) {
+      return;
+    }
+    await runPlanImport(planFile, {
+      expectedTableCount: planExpectedTableCount,
+      expectedRowCount: planExpectedRowCount,
+      expectedColumnCount: planExpectedColumnCount,
+      expectedChairTotal: planExpectedChairTotal,
+    });
+  }
+
+  async function handleReimportWithChangedInputs(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!importReview || !reimportFile) {
+      return;
+    }
+
+    const previousReview = importReview;
+    setPlanFile(reimportFile);
+    setPlanExpectedTableCount(reimportExpectedTableCount);
+    setPlanExpectedRowCount(reimportExpectedRowCount);
+    setPlanExpectedColumnCount(reimportExpectedColumnCount);
+    setPlanExpectedChairTotal(reimportExpectedChairTotal);
+
+    const deleted = await completeImportReviewAction(previousReview, "delete_imported", {
+      retry: true,
+    });
+    if (!deleted) {
+      return;
+    }
+    await runPlanImport(reimportFile, {
+      expectedTableCount: reimportExpectedTableCount,
+      expectedRowCount: reimportExpectedRowCount,
+      expectedColumnCount: reimportExpectedColumnCount,
+      expectedChairTotal: reimportExpectedChairTotal,
+    });
   }
 
   async function handleUpdateMesa(event: FormEvent<HTMLFormElement>) {
@@ -761,6 +1279,28 @@ export default function AdminDashboard({
         mesaId: mesaEditId,
       },
       "Mesa eliminada",
+    );
+  }
+
+  async function handleDeleteAllMesas() {
+    if (!selectedEventId) {
+      return;
+    }
+
+    await runAdminAction(
+      "/api/admin/mesas/delete",
+      {
+        eventoId: selectedEventId,
+        deleteAll: true,
+      },
+      "Todas las mesas eliminadas",
+      () => {
+        setMesaEditId("");
+        setMesaSeleccionadaId("");
+        setSillaEditId("");
+        setSillaEditMesaId("");
+        setSillaSeleccionadaId("");
+      },
     );
   }
 
@@ -1521,6 +2061,14 @@ export default function AdminDashboard({
                     >
                       Eliminar mesa
                     </button>
+                    <button
+                      type="button"
+                      onClick={handleDeleteAllMesas}
+                      disabled={!selectedEventId || isPending || (panelData?.evento.mesas.length ?? 0) === 0}
+                      className="inline-flex items-center justify-center rounded-full border border-rose-400 bg-rose-50 px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-rose-800 transition hover:border-rose-600 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Borrar todas
+                    </button>
                   </div>
                 </form>
 
@@ -1604,16 +2152,16 @@ export default function AdminDashboard({
             <AdminCard
               eyebrow="Plano"
               title="Cargar plano de sala"
-              description="Sube un PDF, una captura, un TXT, un CSV, un Excel, un DOCX o un JSON para generar automaticamente la estructura del evento."
+              description="Sube una imagen del plano para generar automaticamente la estructura del evento. Puedes añadir cifras esperadas para bloquear resultados incompletos o inconsistentes."
             >
               <form className="grid gap-4" onSubmit={handleImportPlan}>
                 <AdminField
                   label="Archivo del plano"
-                  hint="Prioriza el formato M:x y debajo S:x para cada mesa. Tambien puede leer capturas e imagenes con OCR."
+                  hint="Usa una imagen clara donde se lean bien las etiquetas M:x y S:x de cada mesa."
                 >
                   <input
                     type="file"
-                    accept=".pdf,.txt,.json,.csv,.xlsx,.xls,.docx,image/*"
+                    accept="image/png,image/jpeg,image/jpg,image/webp"
                     disabled={!selectedEventId || isPending}
                     onChange={(event) => {
                       setPlanFile(event.target.files?.[0] ?? null);
@@ -1626,8 +2174,70 @@ export default function AdminDashboard({
                     Archivo preparado: <span className="font-semibold text-stone-900">{planFile.name}</span>
                   </p>
                 ) : null}
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                  <AdminField
+                    label="Mesas esperadas"
+                    hint="Si no coincide, el sistema no importara el plano."
+                  >
+                    <input
+                      type="number"
+                      min="1"
+                      inputMode="numeric"
+                      value={planExpectedTableCount}
+                      onChange={(event) => setPlanExpectedTableCount(event.target.value)}
+                      disabled={!selectedEventId || isPending}
+                      className={FieldInputClass(!selectedEventId || isPending)}
+                      placeholder="Ej: 42"
+                    />
+                  </AdminField>
+                  <AdminField
+                    label="Filas esperadas"
+                    hint="Sirve para validar la estructura general."
+                  >
+                    <input
+                      type="number"
+                      min="1"
+                      inputMode="numeric"
+                      value={planExpectedRowCount}
+                      onChange={(event) => setPlanExpectedRowCount(event.target.value)}
+                      disabled={!selectedEventId || isPending}
+                      className={FieldInputClass(!selectedEventId || isPending)}
+                      placeholder="Ej: 7"
+                    />
+                  </AdminField>
+                  <AdminField
+                    label="Columnas esperadas"
+                    hint="Ayuda a detectar una malla colocada mal."
+                  >
+                    <input
+                      type="number"
+                      min="1"
+                      inputMode="numeric"
+                      value={planExpectedColumnCount}
+                      onChange={(event) => setPlanExpectedColumnCount(event.target.value)}
+                      disabled={!selectedEventId || isPending}
+                      className={FieldInputClass(!selectedEventId || isPending)}
+                      placeholder="Ej: 6"
+                    />
+                  </AdminField>
+                  <AdminField
+                    label="Sillas totales"
+                    hint="Valida la suma final de sillas del plano."
+                  >
+                    <input
+                      type="number"
+                      min="1"
+                      inputMode="numeric"
+                      value={planExpectedChairTotal}
+                      onChange={(event) => setPlanExpectedChairTotal(event.target.value)}
+                      disabled={!selectedEventId || isPending}
+                      className={FieldInputClass(!selectedEventId || isPending)}
+                      placeholder="Ej: 302"
+                    />
+                  </AdminField>
+                </div>
                 <div className="rounded-3xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm leading-6 text-amber-900">
-                  Sugerencia: para minimizar errores usa bloques tipo M:4 y justo debajo S:10. Si subes un plano visual, el sistema intentara replicar tambien el orden y la colocacion aproximada de las mesas.
+                  Sugerencia: para minimizar errores usa una imagen nitida y procura que cada mesa muestre claramente bloques tipo M:4 y justo debajo S:10.
                 </div>
                 <button
                   type="submit"
@@ -1641,6 +2251,344 @@ export default function AdminDashboard({
           </div>
         </AdminSection>
       </div>
+
+      {importProgress ? (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-stone-950/55 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-3xl rounded-[32px] border border-stone-200 bg-white px-6 py-6 shadow-[0_30px_120px_rgba(28,25,23,0.28)]">
+            <div className="flex flex-col items-center text-center">
+              <p className="text-sm font-semibold uppercase tracking-[0.25em] text-amber-700">
+                Importando plano
+              </p>
+              <div className="mt-6 h-14 w-14 animate-spin rounded-full border-4 border-stone-200 border-t-amber-700" />
+              <p className="mt-5 max-w-2xl text-sm leading-7 text-stone-600">
+                {importProgress.summary ??
+                  "El importador esta procesando la imagen, leyendo mesas y sillas y validando el resultado antes de guardarlo."}
+              </p>
+              <button
+                type="button"
+                onClick={handleCancelImport}
+                disabled={importProgress.cancelling}
+                className="mt-6 inline-flex items-center justify-center rounded-full border border-rose-300 bg-white px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-rose-700 transition hover:border-rose-500 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {importProgress.cancelling ? "Cancelando importacion..." : "Cancelar importacion"}
+              </button>
+            </div>
+
+            <div className="mt-8 rounded-[28px] border border-stone-200 bg-stone-50">
+              <button
+                type="button"
+                onClick={() =>
+                  setImportProgress((current) =>
+                    current ? { ...current, expanded: !current.expanded } : current,
+                  )
+                }
+                className="flex w-full items-center justify-between gap-4 px-5 py-4 text-left"
+              >
+                <div>
+                  <p className="text-sm font-semibold uppercase tracking-[0.18em] text-stone-700">
+                    Log del importador
+                  </p>
+                  <p className="mt-1 text-sm leading-6 text-stone-500">
+                    Sigue en tiempo real lo que esta haciendo el importador para ver si avanza o si se ha quedado bloqueado.
+                  </p>
+                </div>
+                <span className="rounded-full border border-stone-300 bg-white px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-stone-600">
+                  {importProgress.expanded ? "Ocultar" : "Mostrar"}
+                </span>
+              </button>
+
+              {importProgress.expanded ? (
+                <div className="border-t border-stone-200 px-5 py-4">
+                  <div className="max-h-[320px] overflow-y-auto rounded-3xl bg-stone-950 px-4 py-4 font-mono text-xs leading-6 text-emerald-300">
+                    {importProgress.logs.length > 0 ? (
+                      importProgress.logs.map((entry) => (
+                        <p key={entry.id} className="whitespace-pre-wrap break-words">
+                          {formatImportLogEntry(entry)}
+                        </p>
+                      ))
+                    ) : (
+                      <p className="text-stone-300">
+                        Esperando los primeros mensajes del importador...
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {importReview && importReviewPreviewEvent ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/55 p-4 backdrop-blur-sm">
+          <div className="flex max-h-[92vh] w-full max-w-7xl flex-col overflow-hidden rounded-[32px] border border-stone-200 bg-white shadow-[0_30px_120px_rgba(28,25,23,0.28)]">
+            <div className="flex flex-wrap items-start justify-between gap-4 border-b border-stone-200 px-6 py-5">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-[0.25em] text-amber-700">
+                  Revision del plano
+                </p>
+                <h2 className="mt-3 text-2xl font-semibold tracking-tight text-stone-950">
+                  Comprueba si la importacion ha quedado correcta
+                </h2>
+                <p className="mt-2 text-sm leading-7 text-stone-600">
+                  Revisa el plano en 2D o 3D, confirma si ha quedado bien y, si no, decide si quieres dejarlo, borrarlo o borrar y reintentar.
+                </p>
+              </div>
+              <div className="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm text-stone-700">
+                <p className="font-semibold text-stone-900">{importReview.eventoNombre}</p>
+                <p className="mt-1">
+                  {importReview.importedTables.length} mesas y{" "}
+                  {importReview.importedTables.reduce(
+                    (sum, table) => sum + table.chairCount,
+                    0,
+                  )}{" "}
+                  sillas
+                </p>
+              </div>
+            </div>
+
+            <div className="grid flex-1 gap-0 xl:grid-cols-[minmax(0,1fr)_320px]">
+              <div className="flex min-h-[520px] flex-col border-b border-stone-200 xl:border-b-0 xl:border-r">
+                <DinnerRoomScene
+                  evento={importReviewPreviewEvent}
+                  selectedSillaId={null}
+                  currentAsistenteId=""
+                  selectionLocked
+                  onSelectSilla={() => {}}
+                />
+
+                <div className="border-t border-stone-200 bg-stone-50 px-5 py-5">
+                  <p className="text-sm font-semibold uppercase tracking-[0.18em] text-stone-600">
+                    Confirmacion
+                  </p>
+                  <div className="mt-4 flex flex-wrap gap-3">
+                    <button
+                      type="button"
+                      onClick={() => handleImportReviewAction("confirm")}
+                      className="inline-flex items-center justify-center rounded-full bg-stone-950 px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-amber-700"
+                    >
+                      Si, esta correcto
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowImportRejectActions((current) => !current)}
+                      className="inline-flex items-center justify-center rounded-full border border-rose-300 bg-white px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-rose-700 transition hover:border-rose-500 hover:bg-rose-50"
+                    >
+                      No
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="min-h-0 px-6 py-5">
+                <details className="flex h-full min-h-0 flex-col overflow-hidden rounded-3xl border border-stone-200 bg-stone-50" open>
+                  <summary className="cursor-pointer list-none px-5 py-4 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700">
+                    Mesas y sillas importadas
+                  </summary>
+                  <div className="grid max-h-[calc(92vh-280px)] gap-3 overflow-y-auto border-t border-stone-200 px-5 py-4 pb-8">
+                    {importReview.importedTables
+                      .slice()
+                      .sort((a, b) => a.numero - b.numero)
+                      .map((table) => (
+                        <div
+                          key={`review-${table.numero}`}
+                          className="rounded-2xl border border-stone-200 bg-white px-4 py-3"
+                        >
+                          <p className="text-sm font-semibold text-stone-900">
+                            Mesa {table.numero}
+                          </p>
+                          <p className="mt-1 text-sm leading-6 text-stone-600">
+                            Sillas: {table.chairCount}
+                          </p>
+                        </div>
+                      ))}
+                  </div>
+                </details>
+              </div>
+            </div>
+          </div>
+
+          {showImportRejectActions ? (
+            <div className="absolute inset-0 z-20 flex items-center justify-center bg-stone-950/35 px-4 py-6 backdrop-blur-[2px]">
+              <div className="w-full max-w-xl rounded-[28px] border border-stone-200 bg-white px-6 py-6 shadow-[0_24px_90px_rgba(28,25,23,0.25)]">
+                <p className="text-sm font-semibold uppercase tracking-[0.22em] text-rose-700">
+                  El plano no ha quedado bien
+                </p>
+                <h3 className="mt-3 text-2xl font-semibold tracking-tight text-stone-950">
+                  Que quieres hacer con esta importacion
+                </h3>
+                <p className="mt-3 text-sm leading-7 text-stone-600">
+                  Puedes mantener el plano tal cual, borrarlo por completo o borrarlo y volver a intentarlo con otra importacion.
+                </p>
+                <div className="mt-6 flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={() => handleImportReviewAction("dismiss")}
+                    className="inline-flex items-center justify-center rounded-full border border-stone-300 bg-white px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+                  >
+                    Dejar el plano asi
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleImportReviewAction("delete_imported")}
+                    className="inline-flex items-center justify-center rounded-full border border-rose-300 bg-white px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-rose-700 transition hover:border-rose-500 hover:bg-rose-50"
+                  >
+                    Borrar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={openReimportChoice}
+                    className="inline-flex items-center justify-center rounded-full bg-amber-700 px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-amber-800"
+                  >
+                    Borrar y reintentar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowImportRejectActions(false)}
+                    className="inline-flex items-center justify-center rounded-full border border-stone-200 bg-stone-50 px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-600 transition hover:border-stone-300 hover:bg-stone-100 hover:text-stone-900"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {reimportDialogMode === "choice" ? (
+            <div className="absolute inset-0 z-30 flex items-center justify-center bg-stone-950/35 px-4 py-6 backdrop-blur-[2px]">
+              <div className="w-full max-w-lg rounded-[28px] border border-stone-200 bg-white px-6 py-6 shadow-[0_24px_90px_rgba(28,25,23,0.25)]">
+                <p className="text-sm font-semibold uppercase tracking-[0.22em] text-amber-700">
+                  Reintentar importacion
+                </p>
+                <h3 className="mt-3 text-2xl font-semibold tracking-tight text-stone-950">
+                  Como quieres reimportar el plano
+                </h3>
+                <p className="mt-3 text-sm leading-7 text-stone-600">
+                  Primero se borrara esta importacion y despues volvera a lanzarse el importador. Al terminar, volvera a salir la revision.
+                </p>
+                <div className="mt-6 flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={handleReimportWithCurrentInputs}
+                    disabled={!planFile}
+                    className="inline-flex items-center justify-center rounded-full bg-stone-950 px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-stone-400"
+                  >
+                    Continuar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setReimportDialogMode("params")}
+                    className="inline-flex items-center justify-center rounded-full border border-stone-300 bg-white px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+                  >
+                    Cambiar parametros
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setReimportDialogMode(null)}
+                    className="inline-flex items-center justify-center rounded-full border border-stone-200 bg-stone-50 px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-600 transition hover:border-stone-300 hover:bg-stone-100 hover:text-stone-900"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {reimportDialogMode === "params" ? (
+            <div className="absolute inset-0 z-30 flex items-center justify-center bg-stone-950/35 px-4 py-6 backdrop-blur-[2px]">
+              <form
+                className="w-full max-w-2xl rounded-[28px] border border-stone-200 bg-white px-6 py-6 shadow-[0_24px_90px_rgba(28,25,23,0.25)]"
+                onSubmit={handleReimportWithChangedInputs}
+              >
+                <p className="text-sm font-semibold uppercase tracking-[0.22em] text-amber-700">
+                  Nuevos parametros
+                </p>
+                <h3 className="mt-3 text-2xl font-semibold tracking-tight text-stone-950">
+                  Ajusta la reimportacion
+                </h3>
+                <div className="mt-6 grid gap-4">
+                  <AdminField label="Archivo del plano">
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/jpg,image/webp"
+                      onChange={(event) => {
+                        setReimportFile(event.target.files?.[0] ?? reimportFile);
+                      }}
+                      className="block w-full rounded-2xl border border-stone-300 bg-stone-50 px-4 py-3 text-sm text-stone-700 file:mr-4 file:rounded-full file:border-0 file:bg-stone-950 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white"
+                    />
+                  </AdminField>
+                  {reimportFile ? (
+                    <p className="text-sm leading-6 text-stone-600">
+                      Archivo preparado:{" "}
+                      <span className="font-semibold text-stone-900">
+                        {reimportFile.name}
+                      </span>
+                    </p>
+                  ) : null}
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <AdminField label="Mesas esperadas">
+                      <input
+                        type="number"
+                        min="1"
+                        inputMode="numeric"
+                        value={reimportExpectedTableCount}
+                        onChange={(event) => setReimportExpectedTableCount(event.target.value)}
+                        className={FieldInputClass()}
+                      />
+                    </AdminField>
+                    <AdminField label="Filas esperadas">
+                      <input
+                        type="number"
+                        min="1"
+                        inputMode="numeric"
+                        value={reimportExpectedRowCount}
+                        onChange={(event) => setReimportExpectedRowCount(event.target.value)}
+                        className={FieldInputClass()}
+                      />
+                    </AdminField>
+                    <AdminField label="Columnas esperadas">
+                      <input
+                        type="number"
+                        min="1"
+                        inputMode="numeric"
+                        value={reimportExpectedColumnCount}
+                        onChange={(event) => setReimportExpectedColumnCount(event.target.value)}
+                        className={FieldInputClass()}
+                      />
+                    </AdminField>
+                    <AdminField label="Sillas totales">
+                      <input
+                        type="number"
+                        min="1"
+                        inputMode="numeric"
+                        value={reimportExpectedChairTotal}
+                        onChange={(event) => setReimportExpectedChairTotal(event.target.value)}
+                        className={FieldInputClass()}
+                      />
+                    </AdminField>
+                  </div>
+                </div>
+                <div className="mt-6 flex flex-wrap gap-3">
+                  <button
+                    type="submit"
+                    disabled={!reimportFile}
+                    className="inline-flex items-center justify-center rounded-full bg-stone-950 px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-stone-400"
+                  >
+                    Reimportar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setReimportDialogMode("choice")}
+                    className="inline-flex items-center justify-center rounded-full border border-stone-300 bg-white px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+                  >
+                    Volver
+                  </button>
+                </div>
+              </form>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </main>
   );
 }

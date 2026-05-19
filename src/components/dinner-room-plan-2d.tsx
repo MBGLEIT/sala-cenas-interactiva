@@ -4,8 +4,11 @@ import { PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { EventoSala, Silla, normalizeReservas } from "@/lib/dinner-room";
 import {
+  ROOM_LAYOUT_HEIGHT,
+  ROOM_LAYOUT_WIDTH,
   getEventBounds,
   PlanFrame,
+  getEventTitleFootprint,
   getPlanFrame,
   getTableDimensions,
   getRectangleChairSlots,
@@ -118,6 +121,10 @@ export default function DinnerRoomPlan2D({
   );
   const bounds = useMemo(() => getEventBounds(mesas), [mesas]);
   const computedFrame = useMemo(() => getPlanFrame(mesas), [mesas]);
+  const titleFootprint = useMemo(
+    () => getEventTitleFootprint(evento.nombre, ROOM_LAYOUT_WIDTH, ROOM_LAYOUT_HEIGHT),
+    [evento.nombre],
+  );
   const [sceneFrame, setSceneFrame] = useState<PlanFrame>(computedFrame);
   const centerX = sceneFrame.centerX;
   const centerY = sceneFrame.centerY;
@@ -392,6 +399,17 @@ export default function DinnerRoomPlan2D({
               strokeWidth="6"
             />
 
+            <rect
+              x={ROOM_LAYOUT_WIDTH / 2 - titleFootprint.safeWidth / 2}
+              y={ROOM_LAYOUT_HEIGHT / 2 - titleFootprint.safeHeight / 2}
+              width={titleFootprint.safeWidth}
+              height={titleFootprint.safeHeight}
+              rx="28"
+              fill="#8b6b52"
+              opacity="0.12"
+              pointerEvents="none"
+            />
+
             {mesas.map((mesa) => {
               const dimensions = getTableDimensions(mesa.sillas.length);
               const chairSlots = getRectangleChairSlots(
@@ -498,16 +516,16 @@ export default function DinnerRoomPlan2D({
             })}
 
             <text
-              x={sceneFrame.centerX}
-              y={sceneFrame.centerY}
+              x={ROOM_LAYOUT_WIDTH / 2}
+              y={ROOM_LAYOUT_HEIGHT / 2 + titleFootprint.planFontSize * 0.28}
               textAnchor="middle"
-              fontSize="42"
+              fontSize={titleFootprint.planFontSize}
               fontWeight="700"
               fill="#6b6257"
               opacity="0.72"
               pointerEvents="none"
             >
-              {evento.nombre}
+              {titleFootprint.text}
             </text>
           </g>
         </svg>

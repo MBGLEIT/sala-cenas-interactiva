@@ -100,9 +100,15 @@ export const adminUpdateMesaSchema = z.object({
   posY: z.coerce.number(),
 });
 
-export const adminDeleteMesaSchema = z.object({
-  mesaId: uuidLikeSchema,
-});
+export const adminDeleteMesaSchema = z.union([
+  z.object({
+    mesaId: uuidLikeSchema,
+  }),
+  z.object({
+    eventoId: uuidLikeSchema,
+    deleteAll: z.literal(true),
+  }),
+]);
 
 export const adminCreateSillaSchema = z.object({
   mesaId: uuidLikeSchema,
@@ -150,6 +156,22 @@ export const adminDeleteAsistenteSchema = z.object({
 
 export const adminImportPlanSchema = z.object({
   eventoId: uuidLikeSchema,
+  expectedTableCount: z.coerce.number().int().min(1).max(500).optional(),
+  expectedRowCount: z.coerce.number().int().min(1).max(100).optional(),
+  expectedColumnCount: z.coerce.number().int().min(1).max(100).optional(),
+  expectedChairTotal: z.coerce.number().int().min(1).max(5000).optional(),
+  clientTraceId: z.string().trim().min(4).max(100).optional(),
+});
+
+export const adminImportPlanReviewSchema = z.object({
+  action: z.enum(["confirm", "dismiss", "delete_imported"]),
+  traceId: z.string().trim().min(4).max(100),
+  eventoId: uuidLikeSchema,
+  mesaIds: z.array(uuidLikeSchema).optional().default([]),
+});
+
+export const adminImportPlanTraceSchema = z.object({
+  traceId: z.string().trim().min(4).max(100),
 });
 
 export type CrearReservaInput = z.infer<typeof crearReservaSchema>;

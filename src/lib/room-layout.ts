@@ -40,6 +40,17 @@ export type TableDimensions = {
   chairOffset: number;
 };
 
+export type EventTitleFootprint = {
+  text: string;
+  width: number;
+  height: number;
+  safeWidth: number;
+  safeHeight: number;
+  maxWidthRatio: number;
+  worldFontSize: number;
+  planFontSize: number;
+};
+
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(value, max));
 }
@@ -119,9 +130,26 @@ export function getRectangleChairSlots(
 
   return [
     ...distributeAlongHorizontal(topCount, width, -(height / 2 + offset), 0),
-    ...distributeAlongVertical(rightCount, height, width / 2 + offset, -Math.PI / 2),
-    ...distributeAlongHorizontal(bottomCount, width, height / 2 + offset, Math.PI),
-    ...distributeAlongVertical(leftCount, height, -(width / 2 + offset), Math.PI / 2),
+    ...distributeAlongVertical(
+      rightCount,
+      height,
+      width / 2 + offset,
+      -Math.PI / 2,
+    ),
+    ...distributeAlongHorizontal(
+      bottomCount,
+      width,
+      height / 2 + offset,
+      Math.PI,
+      true,
+    ),
+    ...distributeAlongVertical(
+      leftCount,
+      height,
+      -(width / 2 + offset),
+      Math.PI / 2,
+      true,
+    ),
   ];
 }
 
@@ -144,6 +172,7 @@ function distributeAlongHorizontal(
   width: number,
   y: number,
   rotation: number,
+  reverse = false,
 ) {
   if (count <= 0) {
     return [] as ChairSlot[];
@@ -151,11 +180,13 @@ function distributeAlongHorizontal(
 
   const spacing = width / (count + 1);
 
-  return Array.from({ length: count }, (_, index) => ({
+  const slots = Array.from({ length: count }, (_, index) => ({
     x: -width / 2 + spacing * (index + 1),
     y,
     rotation,
   }));
+
+  return reverse ? slots.reverse() : slots;
 }
 
 function distributeAlongVertical(
@@ -163,6 +194,7 @@ function distributeAlongVertical(
   height: number,
   x: number,
   rotation: number,
+  reverse = false,
 ) {
   if (count <= 0) {
     return [] as ChairSlot[];
@@ -170,11 +202,47 @@ function distributeAlongVertical(
 
   const spacing = height / (count + 1);
 
-  return Array.from({ length: count }, (_, index) => ({
+  const slots = Array.from({ length: count }, (_, index) => ({
     x,
     y: -height / 2 + spacing * (index + 1),
     rotation,
   }));
+
+  return reverse ? slots.reverse() : slots;
+}
+
+export function getEventTitleFootprint(
+  eventName: string,
+  roomWidth: number = ROOM_LAYOUT_WIDTH,
+  roomHeight: number = ROOM_LAYOUT_HEIGHT,
+): EventTitleFootprint {
+  const text = eventName.trim() || "EVENTO";
+  const normalizedLength = clamp(text.length, 6, 48);
+  const lineEstimate = Math.max(1, Math.ceil(normalizedLength / 18));
+  const width = clamp(
+    420 + normalizedLength * 18,
+    Math.min(520, roomWidth * 0.22),
+    roomWidth * 0.56,
+  );
+  const height = clamp(
+    120 + lineEstimate * 34,
+    Math.min(150, roomHeight * 0.08),
+    roomHeight * 0.22,
+  );
+  const safeWidth = clamp(width + 110, width + 50, roomWidth * 0.5);
+  const safeHeight = clamp(height + 96, height + 42, roomHeight * 0.18);
+  const maxWidthRatio = clamp(safeWidth / roomWidth + 0.06, 0.24, 0.72);
+
+  return {
+    text,
+    width,
+    height,
+    safeWidth,
+    safeHeight,
+    maxWidthRatio,
+    worldFontSize: clamp(width / 720, 0.56, 1.05),
+    planFontSize: clamp(width / 11.5, 28, 56),
+  };
 }
 
 export function getTableDimensions(chairCount: number): TableDimensions {
