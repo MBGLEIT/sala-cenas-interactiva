@@ -6,6 +6,12 @@ import {
 } from "@/lib/plan-import-feedback";
 import { importTablesFromPlanFile, type PlanImportHints, type ImportedPlanTable } from "@/lib/plan-import";
 import {
+  isRunningOnVercel,
+  PLAN_IMPORT_FILE_SIZE_MESSAGE,
+  PLAN_IMPORT_SAFE_FILE_SIZE_BYTES,
+  PLAN_IMPORT_VERCEL_UNAVAILABLE_MESSAGE,
+} from "@/lib/runtime-env";
+import {
   appendPlanImportTraceLog,
   assertPlanImportNotCancelled,
   beginPlanImportTrace,
@@ -114,6 +120,20 @@ export async function POST(request: Request) {
     );
   }
 
+  if (isRunningOnVercel()) {
+    routeLog(traceId, "warn", "request.unsupported_on_vercel");
+    markPlanImportTraceStatus(traceId, "failed", PLAN_IMPORT_VERCEL_UNAVAILABLE_MESSAGE);
+    clearPlanImportAbortController(traceId);
+    return NextResponse.json(
+      {
+        error: PLAN_IMPORT_VERCEL_UNAVAILABLE_MESSAGE,
+        traceId,
+        unsupported: true,
+      },
+      { status: 503 },
+    );
+  }
+
   const formData = initialFormData;
   const eventoId = formData?.get("eventoId");
   const file = formData?.get("file");
@@ -147,6 +167,23 @@ export async function POST(request: Request) {
     return NextResponse.json(
       { error: "Debes subir un archivo con el plano de sala.", traceId },
       { status: 400 },
+    );
+  }
+
+  if (file.size > PLAN_IMPORT_SAFE_FILE_SIZE_BYTES) {
+    routeLog(traceId, "warn", "request.file_too_large", {
+      fileName: file.name,
+      fileSize: file.size,
+      maxBytes: PLAN_IMPORT_SAFE_FILE_SIZE_BYTES,
+    });
+    markPlanImportTraceStatus(traceId, "failed", PLAN_IMPORT_FILE_SIZE_MESSAGE);
+    clearPlanImportAbortController(traceId);
+    return NextResponse.json(
+      {
+        error: PLAN_IMPORT_FILE_SIZE_MESSAGE,
+        traceId,
+      },
+      { status: 413 },
     );
   }
 

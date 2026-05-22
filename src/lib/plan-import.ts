@@ -9,6 +9,12 @@ import { Jimp } from "jimp";
 import sharp from "sharp";
 
 import {
+  getValidatedMesaNumberPriors,
+  getValidatedPlanPriors,
+  type ValidatedMesaNumberPriors,
+  type ValidatedPlanPriors,
+} from "@/lib/plan-import-feedback";
+import {
   ROOM_LAYOUT_HEIGHT,
   ROOM_LAYOUT_WIDTH,
   getEventTitleFootprint,
@@ -51,6 +57,40 @@ type MesaSillaPair = {
   chairCount: number;
   x?: number;
   y?: number;
+};
+
+type TableChairCandidateSource =
+  | "current_selected"
+  | "paddle_full"
+  | "paddle_bottom_band"
+  | "paddle_tight"
+  | "paddle_wide"
+  | "gpt_ordered"
+  | "ocr_fallback"
+  | "validated_prior"
+  | "validated_mesa_prior";
+
+type TableChairCandidate = {
+  chairCount: number;
+  source: TableChairCandidateSource;
+  confidence: number;
+  evidence?: string;
+};
+
+type SuspicionFlag =
+  | "source_disagreement"
+  | "weak_ocr_evidence"
+  | "bottom_band_conflict"
+  | "global_total_pressure"
+  | "validated_prior_mismatch"
+  | "neighbor_swap_risk";
+
+type TableResolutionCandidate = MesaSillaPair & {
+  positionIndex: number;
+  candidates: TableChairCandidate[];
+  selectedChairCount: number;
+  suspicionScore: number;
+  suspicionFlags: SuspicionFlag[];
 };
 
 type ImportSourceBounds = {
@@ -107,6 +147,16 @@ type CropRegion = {
   y: number;
   width: number;
   height: number;
+};
+
+type SuspiciousChairCropRegion = CropRegion & {
+  index: number;
+  tableIndex: number;
+  source: Extract<
+    TableChairCandidateSource,
+    "paddle_bottom_band" | "paddle_tight" | "paddle_wide"
+  >;
+  evidence: string;
 };
 
 type OcrWorkerLike = {
@@ -175,13 +225,81 @@ type DetectedImageLayout = {
   nearestDistance: number;
 };
 
+type TimeoutOptions = {
+  signal?: AbortSignal;
+};
+
+type PythonCommandCandidate = {
+  command: string;
+  argsPrefix: string[];
+};
+
+type PythonCommandPreference = "default" | "paddle";
+
+type ExecPythonOptions = Parameters<typeof execFile>[2] & {
+  signal?: AbortSignal;
+  preference?: PythonCommandPreference;
+  retryMissingPaddleSupport?: boolean;
+};
+
 const OCR_VARIANT_LIMIT_VERCEL = 1;
 const OPENAI_IMPORT_MODEL = process.env.OPENAI_IMPORT_MODEL?.trim() || "gpt-4.1";
 const IMAGE_GEOMETRY_TIMEOUT_MS = 20000;
 const IMAGE_GEOMETRY_OCR_TIMEOUT_MS = 45000;
 const IMAGE_ADVANCED_VISION_TIMEOUT_MS = 240000;
 const PADDLE_PLAN_OCR_TIMEOUT_MS = 240000;
-const PADDLE_PYTHON_PATH = "C:\\Users\\Administrador\\AppData\\Local\\Programs\\Python\\Python312\\python.exe";
+
+function getUniquePythonCommandCandidates(candidates: PythonCommandCandidate[]) {
+  const seen = new Set<string>();
+  return candidates.filter((candidate) => {
+    const key = `${candidate.command}\u0000${candidate.argsPrefix.join("\u0000")}`;
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+}
+
+function getPythonCommandCandidates(preference: PythonCommandPreference = "default") {
+  const paddleEnvCandidates = [process.env.PADDLE_PYTHON_PATH]
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value));
+  const envCandidates = [process.env.PYTHON]
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value));
+  const localVenvCandidates =
+    process.platform === "win32"
+      ? [
+          path.resolve(process.cwd(), ".venv", "Scripts", "python.exe"),
+          path.resolve(process.cwd(), "venv", "Scripts", "python.exe"),
+        ]
+      : [
+          path.resolve(process.cwd(), ".venv", "bin", "python3"),
+          path.resolve(process.cwd(), ".venv", "bin", "python"),
+          path.resolve(process.cwd(), "venv", "bin", "python3"),
+          path.resolve(process.cwd(), "venv", "bin", "python"),
+        ];
+  const defaultCommands =
+    process.platform === "win32"
+      ? ["python", "python3", "py"]
+      : ["python3", "python"];
+  const orderedCommands =
+    preference === "paddle"
+      ? [...paddleEnvCandidates, ...localVenvCandidates, ...envCandidates, ...defaultCommands]
+      : [...paddleEnvCandidates, ...envCandidates, ...localVenvCandidates, ...defaultCommands];
+
+  return getUniquePythonCommandCandidates(
+    orderedCommands.map(
+      (command) =>
+        ({
+          command,
+          argsPrefix: [],
+        }) satisfies PythonCommandCandidate,
+    ),
+  );
+}
 
 function logPlanImport(
   debugContext: PlanImportDebugContext | undefined,
@@ -218,6 +336,114 @@ function getImportAbortSignal(debugContext?: PlanImportDebugContext) {
   return getPlanImportAbortSignal(debugContext.traceId);
 }
 
+function createAbortError(message: string) {
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (!signal?.aborted) {
+    return;
+  }
+
+  if (signal.reason instanceof Error) {
+    throw signal.reason;
+  }
+
+  throw createAbortError(
+    typeof signal.reason === "string" && signal.reason.length > 0
+      ? signal.reason
+      : "The operation was aborted",
+  );
+}
+
+function combineAbortSignals(signals: Array<AbortSignal | undefined>) {
+  const activeSignals = signals.filter((signal): signal is AbortSignal => Boolean(signal));
+  if (activeSignals.length === 0) {
+    return {
+      signal: undefined,
+      cleanup: () => {},
+    };
+  }
+
+  if (activeSignals.length === 1) {
+    return {
+      signal: activeSignals[0],
+      cleanup: () => {},
+    };
+  }
+
+  if (typeof AbortSignal.any === "function") {
+    return {
+      signal: AbortSignal.any(activeSignals),
+      cleanup: () => {},
+    };
+  }
+
+  const controller = new AbortController();
+  const listeners = new Map<AbortSignal, () => void>();
+  const cleanup = () => {
+    for (const [signal, listener] of listeners.entries()) {
+      signal.removeEventListener("abort", listener);
+    }
+    listeners.clear();
+  };
+
+  for (const signal of activeSignals) {
+    if (signal.aborted) {
+      controller.abort(signal.reason);
+      return {
+        signal: controller.signal,
+        cleanup,
+      };
+    }
+
+    const listener = () => {
+      cleanup();
+      controller.abort(signal.reason);
+    };
+    listeners.set(signal, listener);
+    signal.addEventListener("abort", listener, { once: true });
+  }
+
+  return {
+    signal: controller.signal,
+    cleanup,
+  };
+}
+
+function attachWorkerAbortHandler(
+  signal: AbortSignal | undefined,
+  worker: { terminate: () => Promise<unknown> },
+) {
+  if (!signal) {
+    return () => {};
+  }
+
+  const onAbort = () => {
+    void worker.terminate().catch(() => {});
+  };
+
+  if (signal.aborted) {
+    onAbort();
+    return () => {};
+  }
+
+  signal.addEventListener("abort", onAbort, { once: true });
+  return () => {
+    signal.removeEventListener("abort", onAbort);
+  };
+}
+
+function isMissingExecutableError(error: unknown) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
 async function execFileWithImportAbort(
   file: string,
   args: string[],
@@ -236,6 +462,95 @@ async function execFileWithImportAbort(
       });
     });
   });
+}
+
+function getExecErrorText(error: unknown) {
+  if (!(error instanceof Error)) {
+    return "";
+  }
+
+  const execError = error as Error & {
+    stdout?: string | Buffer;
+    stderr?: string | Buffer;
+  };
+  const stderr =
+    typeof execError.stderr === "string"
+      ? execError.stderr
+      : Buffer.isBuffer(execError.stderr)
+        ? execError.stderr.toString("utf8")
+        : "";
+  const stdout =
+    typeof execError.stdout === "string"
+      ? execError.stdout
+      : Buffer.isBuffer(execError.stdout)
+        ? execError.stdout.toString("utf8")
+        : "";
+
+  return [error.message, stderr, stdout].filter((value) => value.length > 0).join("\n");
+}
+
+function isMissingPaddleSupportError(error: unknown) {
+  const errorText = getExecErrorText(error);
+  if (!errorText) {
+    return false;
+  }
+
+  return [
+    /ModuleNotFoundError: .*?\b(paddle|paddleocr|paddlex)\b/i,
+    /No module named ['"]?(paddle|paddleocr|paddlex)['"]?/i,
+    /ImportError: .*?\b(paddle|paddleocr|paddlex)\b/i,
+    /cannot import name .* from ['"]?(paddle|paddleocr|paddlex)['"]?/i,
+    /DLL load failed.*?\b(paddle|paddleocr|paddlex)\b/i,
+  ].some((pattern) => pattern.test(errorText));
+}
+
+async function execPythonWithImportAbort(
+  args: string[],
+  options: ExecPythonOptions,
+) {
+  const {
+    preference = "default",
+    retryMissingPaddleSupport = false,
+    ...execOptions
+  } = options;
+  let lastError: unknown;
+  let lastRetryableError: unknown;
+
+  for (const candidate of getPythonCommandCandidates(preference)) {
+    try {
+      return await execFileWithImportAbort(
+        candidate.command,
+        [...candidate.argsPrefix, ...args],
+        execOptions,
+      );
+    } catch (error) {
+      if (isAbortLikeError(error)) {
+        throw error;
+      }
+
+      if (isMissingExecutableError(error)) {
+        lastError = error;
+        continue;
+      }
+
+      if (retryMissingPaddleSupport && isMissingPaddleSupportError(error)) {
+        lastRetryableError = error;
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  if (lastRetryableError instanceof Error) {
+    throw lastRetryableError;
+  }
+
+  if (lastError instanceof Error) {
+    throw lastError;
+  }
+
+  throw new Error("No se encontro un ejecutable de Python compatible para los scripts de importacion.");
 }
 
 function isAbortLikeError(error: unknown) {
@@ -269,22 +584,49 @@ async function withTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
   label: string,
+): Promise<T>;
+async function withTimeout<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  label: string,
+  options?: TimeoutOptions,
+): Promise<T>;
+async function withTimeout<T>(
+  operationOrPromise: Promise<T> | ((signal: AbortSignal) => Promise<T>),
+  timeoutMs: number,
+  label: string,
+  options?: TimeoutOptions,
 ) {
+  const timeoutError = new Error(`${label} timed out after ${timeoutMs}ms`);
+  timeoutError.name = "TimeoutError";
+  const timeoutController = new AbortController();
+  const { signal, cleanup } = combineAbortSignals([options?.signal, timeoutController.signal]);
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
   try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_, reject) => {
-        timeoutHandle = setTimeout(() => {
-          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
-        }, timeoutMs);
-      }),
-    ]);
+    const timeoutPromise = new Promise<T>((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        timeoutController.abort(timeoutError);
+        reject(timeoutError);
+      }, timeoutMs);
+    });
+    const operationPromise =
+      typeof operationOrPromise === "function"
+        ? operationOrPromise(signal ?? timeoutController.signal)
+        : operationOrPromise;
+
+    return await Promise.race([operationPromise, timeoutPromise]);
+  } catch (error) {
+    if (timeoutController.signal.aborted && isAbortLikeError(error)) {
+      throw timeoutError;
+    }
+
+    throw error;
   } finally {
     if (timeoutHandle) {
       clearTimeout(timeoutHandle);
     }
+    cleanup();
   }
 }
 
@@ -467,30 +809,956 @@ function getGeometryBounds(entries: MesaSillaPair[], padding = 90) {
   };
 }
 
+function hasSufficientOrderedLabelCoverage(
+  geometryEntryCount: number,
+  orderedLabelCount: number,
+) {
+  if (geometryEntryCount <= 0 || orderedLabelCount <= 0) {
+    return false;
+  }
+
+  return (
+    orderedLabelCount >= geometryEntryCount ||
+    orderedLabelCount >= Math.max(12, Math.floor(geometryEntryCount * 0.7))
+  );
+}
+
 function mergeGeometryWithOrderedLabels(
   geometryEntries: MesaSillaPair[],
   orderedLabels: AiOrderedPlanTable[],
 ) {
   const orderedGeometry = sortEntriesBySpatialOrder(geometryEntries);
-  const limit = Math.min(orderedGeometry.length, orderedLabels.length);
-  const merged: MesaSillaPair[] = [];
-
-  for (let index = 0; index < limit; index += 1) {
-    const geometryEntry = orderedGeometry[index];
+  return orderedGeometry.map((geometryEntry, index) => {
     const labelEntry = orderedLabels[index];
-    merged.push({
+
+    if (!labelEntry) {
+      return { ...geometryEntry };
+    }
+
+    return {
       numero: labelEntry.numero,
       chairCount: labelEntry.chairCount,
       x: geometryEntry.x,
       y: geometryEntry.y,
-    });
+    };
+  });
+}
+
+function trimSpatialEntriesToExpectedGrid(
+  entries: MesaSillaPair[],
+  hints?: PlanImportHints,
+  explicitTargetCount?: number,
+) {
+  const orderedEntries = sortEntriesBySpatialOrder(entries);
+  const targetCount =
+    explicitTargetCount ??
+    (typeof hints?.expectedTableCount === "number" && hints.expectedTableCount > 0
+      ? hints.expectedTableCount
+      : null);
+
+  if (!targetCount || orderedEntries.length <= targetCount) {
+    return orderedEntries;
   }
 
-  return merged;
+  const positionedEntries = orderedEntries.filter(
+    (entry): entry is MesaSillaPair & { x: number; y: number } =>
+      typeof entry.x === "number" && typeof entry.y === "number",
+  );
+
+  if (positionedEntries.length !== orderedEntries.length) {
+    return orderedEntries.slice(0, targetCount);
+  }
+
+  const expectedRowCount =
+    typeof hints?.expectedRowCount === "number" && hints.expectedRowCount > 0
+      ? hints.expectedRowCount
+      : null;
+  const expectedColumnCount =
+    typeof hints?.expectedColumnCount === "number" && hints.expectedColumnCount > 0
+      ? hints.expectedColumnCount
+      : null;
+  const rows = groupEntriesIntoRows(positionedEntries);
+  const limitedRows = expectedRowCount ? rows.slice(0, expectedRowCount) : rows;
+  const trimmedRows = limitedRows.map((row) => {
+    if (!expectedColumnCount || row.length <= expectedColumnCount) {
+      return row;
+    }
+
+    const diffs = row
+      .slice(1)
+      .map((entry, index) => Math.max(0, entry.x - row[index].x))
+      .filter((gap) => gap > 0)
+      .sort((a, b) => a - b);
+    const medianGap = diffs.length
+      ? diffs[Math.floor(diffs.length / 2)]
+      : Math.max(42, (row[row.length - 1].x - row[0].x) / Math.max(1, expectedColumnCount - 1));
+    const duplicateThreshold = clamp(Math.round(medianGap * 0.45), 28, 96);
+    const clusters: Array<Array<MesaSillaPair & { x: number; y: number }>> = [];
+
+    for (const entry of row) {
+      const currentCluster = clusters[clusters.length - 1];
+
+      if (!currentCluster) {
+        clusters.push([entry]);
+        continue;
+      }
+
+      const previous = currentCluster[currentCluster.length - 1];
+      if (Math.abs(entry.x - previous.x) <= duplicateThreshold) {
+        currentCluster.push(entry);
+        continue;
+      }
+
+      clusters.push([entry]);
+    }
+
+    const collapsed = clusters.map((cluster) => cluster[Math.floor(cluster.length / 2)]);
+    if (collapsed.length <= expectedColumnCount) {
+      return collapsed;
+    }
+
+    return collapsed.slice(0, expectedColumnCount);
+  });
+
+  const flattened = trimmedRows.flat();
+  if (flattened.length >= targetCount) {
+    return flattened.slice(0, targetCount);
+  }
+
+  return orderedEntries.slice(0, targetCount);
 }
 
 function getChairTotal(entries: Array<Pick<MesaSillaPair, "chairCount">>) {
   return entries.reduce((sum, entry) => sum + entry.chairCount, 0);
+}
+
+function buildInitialResolutionCandidates(
+  entries: MesaSillaPair[],
+  source: TableChairCandidateSource,
+) {
+  return entries.map((entry, index) => ({
+    ...entry,
+    positionIndex: index,
+    candidates: [
+      {
+        chairCount: entry.chairCount,
+        source,
+        confidence: 0.7,
+        evidence: "initial-first-pass",
+      },
+    ],
+    selectedChairCount: entry.chairCount,
+    suspicionScore: 0,
+    suspicionFlags: [],
+  })) satisfies TableResolutionCandidate[];
+}
+
+function findValidatedPriorForPosition(
+  priors: ValidatedPlanPriors | null | undefined,
+  positionIndex: number,
+) {
+  return priors?.priorsByPosition.find((prior) => prior.positionIndex === positionIndex) ?? null;
+}
+
+function addChairCountCandidate(
+  candidate: TableResolutionCandidate | undefined,
+  chairCount: number | null | undefined,
+  source: TableChairCandidateSource,
+  confidence: number,
+  evidence?: string,
+) {
+  if (
+    !candidate ||
+    typeof chairCount !== "number" ||
+    !Number.isInteger(chairCount) ||
+    chairCount < 1 ||
+    chairCount > 24 ||
+    candidate.candidates.some(
+      (existing) => existing.chairCount === chairCount && existing.source === source,
+    )
+  ) {
+    return;
+  }
+
+  candidate.candidates.push({
+    chairCount,
+    source,
+    confidence,
+    evidence,
+  });
+}
+
+function isDirectOcrChairCandidateSource(source: TableChairCandidateSource) {
+  return (
+    source === "paddle_full" ||
+    source === "paddle_bottom_band" ||
+    source === "paddle_tight" ||
+    source === "paddle_wide" ||
+    source === "ocr_fallback"
+  );
+}
+
+function isMeaningfulChairCandidateSource(source: TableChairCandidateSource) {
+  return (
+    source !== "current_selected" &&
+    source !== "validated_prior" &&
+    source !== "validated_mesa_prior"
+  );
+}
+
+function findValidatedMesaNumberPriorForTable(
+  priors: ValidatedMesaNumberPriors | null | undefined,
+  numero: number,
+) {
+  return priors?.priorsByMesaNumber.find((entry) => entry.numero === numero) ?? null;
+}
+
+function scoreResolutionCandidateSuspicion(
+  candidate: TableResolutionCandidate,
+  options: {
+    expectedChairTotal?: number;
+    currentChairTotal?: number;
+    validatedPriorChairCount?: number | null;
+    competingCounts?: number[];
+  },
+) {
+  const flags: SuspicionFlag[] = [];
+  let score = 0;
+  const meaningfulCandidates = candidate.candidates.filter((entry) =>
+    isMeaningfulChairCandidateSource(entry.source),
+  );
+  const confidenceByChairCount = new Map<number, number>();
+  for (const chairCandidate of meaningfulCandidates) {
+    const currentBest = confidenceByChairCount.get(chairCandidate.chairCount) ?? 0;
+    confidenceByChairCount.set(
+      chairCandidate.chairCount,
+      Math.max(currentBest, chairCandidate.confidence),
+    );
+  }
+  const competingCounts = [...new Set(options.competingCounts ?? [])].filter(
+    (value) => Number.isInteger(value) && value >= 1 && value <= 24,
+  );
+  const selectedMeaningfulConfidence =
+    confidenceByChairCount.get(candidate.selectedChairCount) ?? 0;
+  const conflictingMeaningfulCounts = [...confidenceByChairCount.entries()]
+    .filter(([chairCount]) => chairCount !== candidate.selectedChairCount)
+    .filter(([, confidence]) => confidence >= Math.max(0.6, selectedMeaningfulConfidence - 0.12))
+    .map(([chairCount]) => chairCount);
+
+  if (
+    conflictingMeaningfulCounts.length > 0 ||
+    (selectedMeaningfulConfidence === 0 &&
+      meaningfulCandidates.length > 0 &&
+      competingCounts.some((value) => value !== candidate.selectedChairCount))
+  ) {
+    score += 2;
+    flags.push("source_disagreement");
+  }
+
+  const directOcrCandidates = candidate.candidates.filter(
+    (entry) => isDirectOcrChairCandidateSource(entry.source),
+  );
+  const bestDirectOcrConfidence = directOcrCandidates.reduce(
+    (best, entry) => Math.max(best, entry.confidence),
+    0,
+  );
+  if (directOcrCandidates.length === 0 || bestDirectOcrConfidence < 0.55) {
+    score += 1;
+    flags.push("weak_ocr_evidence");
+  }
+
+  if (
+    typeof options.validatedPriorChairCount === "number" &&
+    options.validatedPriorChairCount !== candidate.selectedChairCount
+  ) {
+    score += 1;
+    flags.push("validated_prior_mismatch");
+  }
+
+  const bottomBandChairCounts = [...new Set(
+    candidate.candidates
+      .filter((entry) => entry.source === "paddle_bottom_band")
+      .map((entry) => entry.chairCount),
+  )];
+  if (
+    bottomBandChairCounts.length > 0 &&
+    bottomBandChairCounts.some((chairCount) => chairCount !== candidate.selectedChairCount)
+  ) {
+    score += 1;
+    flags.push("bottom_band_conflict");
+  }
+
+  if (
+    typeof options.expectedChairTotal === "number" &&
+    typeof options.currentChairTotal === "number" &&
+    options.currentChairTotal !== options.expectedChairTotal &&
+    (flags.includes("source_disagreement") || flags.includes("validated_prior_mismatch"))
+  ) {
+    score += 1;
+    flags.push("global_total_pressure");
+  }
+
+  return {
+    suspicionScore: score,
+    suspicionFlags: [...new Set(flags)],
+  };
+}
+
+function annotateSuspicionScores(
+  candidates: TableResolutionCandidate[],
+  validatedPriors: ValidatedPlanPriors | null | undefined,
+  validatedMesaNumberPriors?: ValidatedMesaNumberPriors | null,
+  expectedChairTotal?: number,
+) {
+  const currentChairTotal = candidates.reduce((sum, candidate) => sum + candidate.selectedChairCount, 0);
+
+  return candidates.map((candidate) => {
+    const prior = findValidatedPriorForPosition(validatedPriors, candidate.positionIndex);
+    const mesaNumberPrior = findValidatedMesaNumberPriorForTable(
+      validatedMesaNumberPriors,
+      candidate.numero,
+    );
+    const competingCounts = candidate.candidates.map((entry) => entry.chairCount);
+    const scored = scoreResolutionCandidateSuspicion(candidate, {
+      expectedChairTotal,
+      currentChairTotal,
+      validatedPriorChairCount:
+        mesaNumberPrior?.mostCommonChairCount ?? prior?.mostCommonChairCount ?? null,
+      competingCounts,
+    });
+
+    return {
+      ...candidate,
+      ...scored,
+    };
+  });
+}
+
+function getChairCandidateSourceWeight(source: TableChairCandidateSource) {
+  switch (source) {
+    case "paddle_bottom_band":
+      return 1.2;
+    case "paddle_tight":
+      return 1.08;
+    case "paddle_full":
+      return 1;
+    case "paddle_wide":
+      return 0.94;
+    case "gpt_ordered":
+      return 0.86;
+    case "ocr_fallback":
+      return 0.72;
+    case "validated_prior":
+      return 0.42;
+    case "validated_mesa_prior":
+      return 0.56;
+    case "current_selected":
+    default:
+      return 0.32;
+  }
+}
+
+function compareChairCandidatePriority(
+  left: TableChairCandidate | null | undefined,
+  right: TableChairCandidate | null | undefined,
+) {
+  if (!left && !right) {
+    return 0;
+  }
+  if (!left) {
+    return 1;
+  }
+  if (!right) {
+    return -1;
+  }
+
+  const confidenceDelta = right.confidence - left.confidence;
+  if (Math.abs(confidenceDelta) > 0.001) {
+    return confidenceDelta;
+  }
+
+  const sourceDelta =
+    getChairCandidateSourceWeight(right.source) - getChairCandidateSourceWeight(left.source);
+  if (Math.abs(sourceDelta) > 0.001) {
+    return sourceDelta;
+  }
+
+  const evidenceComparison = (left.evidence ?? "").localeCompare(right.evidence ?? "");
+  if (evidenceComparison !== 0) {
+    return evidenceComparison;
+  }
+
+  return left.chairCount - right.chairCount;
+}
+
+function buildChairCountResolutionScores(
+  candidate: TableResolutionCandidate,
+  validatedPriorChairCount?: number | null,
+  options?: {
+    includeSelectionBias?: boolean;
+  },
+) {
+  const includeSelectionBias = options?.includeSelectionBias ?? true;
+  const scoreByChairCount = new Map<
+    number,
+    {
+      score: number;
+      support: number;
+      ocrSupport: number;
+      bestCandidate: TableChairCandidate | null;
+      bestCandidateScore: number;
+    }
+  >();
+
+  for (const chairCandidate of candidate.candidates) {
+    const current = scoreByChairCount.get(chairCandidate.chairCount) ?? {
+      score: 0,
+      support: 0,
+      ocrSupport: 0,
+      bestCandidate: null,
+      bestCandidateScore: Number.NEGATIVE_INFINITY,
+    };
+    const weightedConfidence =
+      chairCandidate.confidence * getChairCandidateSourceWeight(chairCandidate.source);
+    const individualScore =
+      weightedConfidence +
+      (includeSelectionBias && chairCandidate.chairCount === candidate.selectedChairCount ? 0.08 : 0) +
+      (typeof validatedPriorChairCount === "number" &&
+      chairCandidate.chairCount === validatedPriorChairCount
+        ? 0.18
+        : 0) +
+      (candidate.suspicionFlags.includes("weak_ocr_evidence") &&
+      isDirectOcrChairCandidateSource(chairCandidate.source)
+        ? 0.05
+        : 0);
+
+    current.score += weightedConfidence;
+    current.support += 1;
+    if (isDirectOcrChairCandidateSource(chairCandidate.source)) {
+      current.ocrSupport += weightedConfidence;
+    }
+    if (
+      individualScore > current.bestCandidateScore + 0.001 ||
+      (Math.abs(individualScore - current.bestCandidateScore) <= 0.001 &&
+        compareChairCandidatePriority(chairCandidate, current.bestCandidate) < 0)
+    ) {
+      current.bestCandidate = chairCandidate;
+      current.bestCandidateScore = individualScore;
+    }
+    scoreByChairCount.set(chairCandidate.chairCount, current);
+  }
+
+  for (const [chairCount, summary] of scoreByChairCount.entries()) {
+    if (includeSelectionBias && chairCount === candidate.selectedChairCount) {
+      summary.score += 0.08;
+    }
+    if (typeof validatedPriorChairCount === "number" && chairCount === validatedPriorChairCount) {
+      summary.score += 0.18;
+    }
+    if (
+      candidate.suspicionFlags.includes("weak_ocr_evidence") &&
+      summary.ocrSupport > 0
+    ) {
+      summary.score += 0.05;
+    }
+  }
+
+  return [...scoreByChairCount.entries()]
+    .map(([chairCount, summary]) => ({
+      chairCount,
+      ...summary,
+    }))
+    .sort((left, right) => {
+      const scoreDelta = right.score - left.score;
+      if (Math.abs(scoreDelta) > 0.001) {
+        return scoreDelta;
+      }
+
+      const ocrDelta = right.ocrSupport - left.ocrSupport;
+      if (Math.abs(ocrDelta) > 0.001) {
+        return ocrDelta;
+      }
+
+      if (right.support !== left.support) {
+        return right.support - left.support;
+      }
+
+      const candidateComparison = compareChairCandidatePriority(
+        left.bestCandidate,
+        right.bestCandidate,
+      );
+      if (candidateComparison !== 0) {
+        return candidateComparison;
+      }
+
+      const baseline =
+        typeof validatedPriorChairCount === "number"
+          ? validatedPriorChairCount
+          : candidate.selectedChairCount;
+      const baselineDelta =
+        Math.abs(left.chairCount - baseline) - Math.abs(right.chairCount - baseline);
+      if (baselineDelta !== 0) {
+        return baselineDelta;
+      }
+
+      return left.chairCount - right.chairCount;
+    });
+}
+
+function selectBestChairCandidate(
+  candidate: TableResolutionCandidate,
+  validatedPriorChairCount?: number | null,
+) {
+  return (
+    buildChairCountResolutionScores(candidate, validatedPriorChairCount, {
+      includeSelectionBias: true,
+    })[0]?.bestCandidate ?? null
+  );
+}
+
+function getResolvedChairCountScore(
+  candidate: TableResolutionCandidate,
+  chairCount: number,
+  validatedPriorChairCount?: number | null,
+) {
+  return (
+    buildChairCountResolutionScores(candidate, validatedPriorChairCount, {
+      includeSelectionBias: false,
+    }).find((entry) => entry.chairCount === chairCount)?.score ?? Number.NEGATIVE_INFINITY
+  );
+}
+
+function reselectResolutionCandidates(
+  candidates: TableResolutionCandidate[],
+  validatedPriors: ValidatedPlanPriors | null | undefined,
+  validatedMesaNumberPriors?: ValidatedMesaNumberPriors | null,
+) {
+  return candidates.map((candidate) => {
+    const prior = findValidatedPriorForPosition(validatedPriors, candidate.positionIndex);
+    const mesaNumberPrior =
+      validatedMesaNumberPriors?.priorsByMesaNumber.find((entry) => entry.numero === candidate.numero)
+        ?.mostCommonChairCount ?? null;
+    const preferredPrior =
+      typeof mesaNumberPrior === "number" ? mesaNumberPrior : prior?.mostCommonChairCount ?? null;
+    const selectedChairCandidate = selectBestChairCandidate(candidate, preferredPrior);
+    const selectedChairCount = selectedChairCandidate?.chairCount ?? candidate.selectedChairCount;
+
+    return {
+      ...candidate,
+      chairCount: selectedChairCount,
+      selectedChairCount,
+    };
+  });
+}
+
+function getSuspiciousRereadPriority(candidate: TableResolutionCandidate) {
+  let priority = candidate.suspicionScore * 100;
+
+  if (candidate.suspicionFlags.includes("global_total_pressure")) {
+    priority += 30;
+  }
+  if (candidate.suspicionFlags.includes("source_disagreement")) {
+    priority += 20;
+  }
+  if (candidate.suspicionFlags.includes("validated_prior_mismatch")) {
+    priority += 12;
+  }
+  if (candidate.suspicionFlags.includes("weak_ocr_evidence")) {
+    priority += 8;
+  }
+
+  return priority;
+}
+
+function selectSuspiciousResolutionCandidatesForReread(
+  entries: TableResolutionCandidate[],
+) {
+  const rereadLimit = Math.min(entries.length, clamp(Math.ceil(entries.length * 0.3), 2, 8));
+
+  return [...entries]
+    .filter((entry) => entry.suspicionScore >= 2)
+    .sort((a, b) => {
+      const priorityDelta =
+        getSuspiciousRereadPriority(b) - getSuspiciousRereadPriority(a);
+      if (priorityDelta !== 0) {
+        return priorityDelta;
+      }
+
+      if (b.candidates.length !== a.candidates.length) {
+        return b.candidates.length - a.candidates.length;
+      }
+
+      return a.positionIndex - b.positionIndex;
+    })
+    .slice(0, rereadLimit);
+}
+
+function getSuspiciousRereadCropIndex(
+  tableIndex: number,
+  source: SuspiciousChairCropRegion["source"],
+) {
+  switch (source) {
+    case "paddle_tight":
+      return tableIndex * 10 + 1;
+    case "paddle_wide":
+      return tableIndex * 10 + 2;
+    case "paddle_bottom_band":
+    default:
+      return tableIndex * 10 + 3;
+  }
+}
+
+function buildSuspiciousChairCropRegions(
+  layout: DetectedImageLayout,
+  entries: TableResolutionCandidate[],
+  halfWidth: number,
+  halfHeight: number,
+) {
+  const orderedGeometry = sortEntriesBySpatialOrder(layout.tables).filter(
+    (entry): entry is MesaSillaPair & { x: number; y: number } =>
+      typeof entry.x === "number" && typeof entry.y === "number",
+  );
+  const rereadEntries = selectSuspiciousResolutionCandidatesForReread(entries);
+  const tightHalfWidth = clamp(Math.round(halfWidth * 0.78), 42, halfWidth);
+  const tightHalfHeight = clamp(Math.round(halfHeight * 0.76), 34, halfHeight);
+  const wideHalfWidth = clamp(Math.round(halfWidth * 1.26), halfWidth + 8, 136);
+  const wideHalfHeight = clamp(Math.round(halfHeight * 1.18), halfHeight + 4, 112);
+  const bottomBandHalfWidth = clamp(Math.round(halfWidth * 1.24), halfWidth, 144);
+  const bottomBandHeight = clamp(Math.round(halfHeight * 0.82), 28, 64);
+
+  return rereadEntries
+    .flatMap((entry) => {
+      const geometryEntry = orderedGeometry[entry.positionIndex];
+      if (!geometryEntry) {
+        return [];
+      }
+
+      const centerX = geometryEntry.x;
+      const centerY = geometryEntry.y;
+
+      return [
+        {
+          index: getSuspiciousRereadCropIndex(entry.positionIndex, "paddle_tight"),
+          tableIndex: entry.positionIndex,
+          source: "paddle_tight",
+          evidence: `reread-tight-index-${entry.positionIndex}`,
+          ...clampCropRegion(
+            {
+              x: centerX - tightHalfWidth,
+              y: centerY - tightHalfHeight,
+              width: tightHalfWidth * 2,
+              height: tightHalfHeight * 2,
+            },
+            layout.sourceBounds.width,
+            layout.sourceBounds.height,
+          ),
+        },
+        {
+          index: getSuspiciousRereadCropIndex(entry.positionIndex, "paddle_wide"),
+          tableIndex: entry.positionIndex,
+          source: "paddle_wide",
+          evidence: `reread-wide-index-${entry.positionIndex}`,
+          ...clampCropRegion(
+            {
+              x: centerX - wideHalfWidth,
+              y: centerY - wideHalfHeight,
+              width: wideHalfWidth * 2,
+              height: wideHalfHeight * 2,
+            },
+            layout.sourceBounds.width,
+            layout.sourceBounds.height,
+          ),
+        },
+        {
+          index: getSuspiciousRereadCropIndex(entry.positionIndex, "paddle_bottom_band"),
+          tableIndex: entry.positionIndex,
+          source: "paddle_bottom_band",
+          evidence: `reread-bottom-band-index-${entry.positionIndex}`,
+          ...clampCropRegion(
+            {
+              x: centerX - bottomBandHalfWidth,
+              y: centerY + Math.round(halfHeight * 0.18),
+              width: bottomBandHalfWidth * 2,
+              height: bottomBandHeight,
+            },
+            layout.sourceBounds.width,
+            layout.sourceBounds.height,
+          ),
+        },
+      ] satisfies SuspiciousChairCropRegion[];
+    });
+}
+
+function buildFinalSuspiciousChairCropRegions(
+  layout: DetectedImageLayout,
+  entries: TableResolutionCandidate[],
+  halfWidth: number,
+  halfHeight: number,
+) {
+  const orderedGeometry = sortEntriesBySpatialOrder(layout.tables).filter(
+    (entry): entry is MesaSillaPair & { x: number; y: number } =>
+      typeof entry.x === "number" && typeof entry.y === "number",
+  );
+  const targetEntries = entries
+    .filter((entry) => entry.suspicionScore > 0)
+    .sort((a, b) => b.suspicionScore - a.suspicionScore || a.positionIndex - b.positionIndex)
+    .slice(0, 4);
+  const focusHalfWidth = clamp(Math.round(halfWidth * 0.92), 46, 88);
+  const focusHalfHeight = clamp(Math.round(halfHeight * 0.7), 30, 58);
+  const bottomFocusHalfWidth = clamp(Math.round(halfWidth * 0.98), 48, 104);
+  const bottomFocusHeight = clamp(Math.round(halfHeight * 0.58), 24, 44);
+
+  return targetEntries.flatMap((entry) => {
+    const geometryEntry = orderedGeometry[entry.positionIndex];
+    if (!geometryEntry) {
+      return [];
+    }
+
+    const centerX = geometryEntry.x;
+    const centerY = geometryEntry.y;
+
+    return [
+      {
+        index: entry.positionIndex * 100 + 11,
+        tableIndex: entry.positionIndex,
+        source: "paddle_tight",
+        evidence: `final-tight-index-${entry.positionIndex}`,
+        ...clampCropRegion(
+          {
+            x: centerX - focusHalfWidth,
+            y: centerY - focusHalfHeight,
+            width: focusHalfWidth * 2,
+            height: focusHalfHeight * 2,
+          },
+          layout.sourceBounds.width,
+          layout.sourceBounds.height,
+        ),
+      },
+      {
+        index: entry.positionIndex * 100 + 12,
+        tableIndex: entry.positionIndex,
+        source: "paddle_bottom_band",
+        evidence: `final-bottom-focus-index-${entry.positionIndex}`,
+        ...clampCropRegion(
+          {
+            x: centerX - bottomFocusHalfWidth,
+            y: centerY + Math.round(halfHeight * 0.22),
+            width: bottomFocusHalfWidth * 2,
+            height: bottomFocusHeight,
+          },
+          layout.sourceBounds.width,
+          layout.sourceBounds.height,
+        ),
+      },
+    ] satisfies SuspiciousChairCropRegion[];
+  });
+}
+
+function buildSuspiciousResolutionDebugEntries(
+  candidates: TableResolutionCandidate[],
+  validatedPriors: ValidatedPlanPriors | null | undefined,
+  validatedMesaNumberPriors?: ValidatedMesaNumberPriors | null,
+) {
+  return candidates
+    .filter((candidate) => candidate.suspicionScore > 0)
+    .map((candidate) => ({
+      positionIndex: candidate.positionIndex,
+      numero: candidate.numero,
+      selectedChairCount: candidate.selectedChairCount,
+      suspicionScore: candidate.suspicionScore,
+      suspicionFlags: candidate.suspicionFlags,
+      validatedPrior:
+        findValidatedPriorForPosition(validatedPriors, candidate.positionIndex)?.mostCommonChairCount ?? null,
+      validatedMesaPrior:
+        findValidatedMesaNumberPriorForTable(validatedMesaNumberPriors, candidate.numero)?.mostCommonChairCount ??
+        null,
+      candidates: candidate.candidates
+        .slice()
+        .sort((left, right) => right.confidence - left.confidence)
+        .map((entry) => ({
+          chairCount: entry.chairCount,
+          source: entry.source,
+          confidence: entry.confidence,
+          evidence: entry.evidence ?? null,
+        })),
+    }));
+}
+
+function getSuspiciousRereadConfidence(source: SuspiciousChairCropRegion["source"]) {
+  switch (source) {
+    case "paddle_bottom_band":
+      return 0.86;
+    case "paddle_tight":
+      return 0.8;
+    case "paddle_wide":
+    default:
+      return 0.74;
+  }
+}
+
+function resolutionCandidatesToEntries(candidates: TableResolutionCandidate[]) {
+  return candidates.map((candidate) => ({
+    numero: candidate.numero,
+    chairCount: candidate.selectedChairCount,
+    x: candidate.x,
+    y: candidate.y,
+  }));
+}
+
+function applyChairCountsToResolutionCandidates(
+  candidates: TableResolutionCandidate[],
+  entries: MesaSillaPair[],
+) {
+  return candidates.map((candidate, index) => {
+    const selectedChairCount = entries[index]?.chairCount ?? candidate.selectedChairCount;
+    return {
+      ...candidate,
+      chairCount: selectedChairCount,
+      selectedChairCount,
+    };
+  });
+}
+
+function maybeSwapNeighborCounts(
+  candidates: TableResolutionCandidate[],
+  validatedPriors: ValidatedPlanPriors | null | undefined,
+  validatedMesaNumberPriors?: ValidatedMesaNumberPriors | null,
+  expectedChairTotal?: number,
+) {
+  const next = candidates.map((candidate) => ({
+    ...candidate,
+    candidates: [...candidate.candidates],
+    suspicionFlags: [...candidate.suspicionFlags],
+  }));
+  const appliedSwaps: Array<{
+    leftIndex: number;
+    rightIndex: number;
+    leftChairCount: number;
+    rightChairCount: number;
+  }> = [];
+  const nearestDistance = estimateNearestNeighborDistance(next);
+  const maxNeighborDistance = Math.max(84, nearestDistance > 0 ? nearestDistance * 1.45 : 132);
+
+  for (let index = 0; index < next.length - 1; index += 1) {
+    const current = next[index];
+    const neighbor = next[index + 1];
+    if (!current || !neighbor) {
+      continue;
+    }
+
+    if (
+      (current.suspicionScore === 0 && neighbor.suspicionScore === 0) ||
+      current.selectedChairCount === neighbor.selectedChairCount
+    ) {
+      continue;
+    }
+
+    if (
+      typeof current.x === "number" &&
+      typeof current.y === "number" &&
+      typeof neighbor.x === "number" &&
+      typeof neighbor.y === "number"
+    ) {
+      const distance = Math.hypot(neighbor.x - current.x, neighbor.y - current.y);
+      const verticalGap = Math.abs(neighbor.y - current.y);
+      if (distance > maxNeighborDistance || verticalGap > maxNeighborDistance * 0.45) {
+        continue;
+      }
+    }
+
+    const currentPrior =
+      validatedMesaNumberPriors?.priorsByMesaNumber.find((entry) => entry.numero === current.numero)
+        ?.mostCommonChairCount ??
+      findValidatedPriorForPosition(validatedPriors, current.positionIndex)?.mostCommonChairCount ??
+      null;
+    const neighborPrior =
+      validatedMesaNumberPriors?.priorsByMesaNumber.find((entry) => entry.numero === neighbor.numero)
+        ?.mostCommonChairCount ??
+      findValidatedPriorForPosition(validatedPriors, neighbor.positionIndex)?.mostCommonChairCount ??
+      null;
+    const keepScore =
+      getResolvedChairCountScore(current, current.selectedChairCount, currentPrior) +
+      getResolvedChairCountScore(neighbor, neighbor.selectedChairCount, neighborPrior);
+    const swapScore =
+      getResolvedChairCountScore(current, neighbor.selectedChairCount, currentPrior) +
+      getResolvedChairCountScore(neighbor, current.selectedChairCount, neighborPrior);
+
+    if (!Number.isFinite(keepScore) || !Number.isFinite(swapScore)) {
+      continue;
+    }
+
+    const keepPriorMatches =
+      (typeof currentPrior === "number" && current.selectedChairCount === currentPrior ? 1 : 0) +
+      (typeof neighborPrior === "number" && neighbor.selectedChairCount === neighborPrior ? 1 : 0);
+    const swapPriorMatches =
+      (typeof currentPrior === "number" && neighbor.selectedChairCount === currentPrior ? 1 : 0) +
+      (typeof neighborPrior === "number" && current.selectedChairCount === neighborPrior ? 1 : 0);
+    const totalPressureBonus =
+      typeof expectedChairTotal === "number" && getChairTotal(next) !== expectedChairTotal ? 0.02 : 0;
+    const shouldSwap =
+      swapScore > keepScore + 0.16 + totalPressureBonus ||
+      (swapScore > keepScore + totalPressureBonus && swapPriorMatches > keepPriorMatches);
+
+    if (!shouldSwap) {
+      continue;
+    }
+
+    const previousCurrentChairCount = current.selectedChairCount;
+    current.chairCount = neighbor.selectedChairCount;
+    current.selectedChairCount = neighbor.selectedChairCount;
+    neighbor.chairCount = previousCurrentChairCount;
+    neighbor.selectedChairCount = previousCurrentChairCount;
+    appliedSwaps.push({
+      leftIndex: current.positionIndex,
+      rightIndex: neighbor.positionIndex,
+      leftChairCount: previousCurrentChairCount,
+      rightChairCount: current.selectedChairCount,
+    });
+    index += 1;
+  }
+
+  return {
+    candidates: next,
+    appliedSwaps,
+  };
+}
+
+function buildNormalizationChairCandidates(
+  entry: MesaSillaPair,
+  resolutionCandidate: TableResolutionCandidate | undefined,
+) {
+  const candidateSourcesByChairCount = new Map<number, Set<TableChairCandidateSource>>();
+  const addCandidate = (
+    chairCount: number | null | undefined,
+    source: TableChairCandidateSource,
+  ) => {
+    if (
+      typeof chairCount !== "number" ||
+      !Number.isInteger(chairCount) ||
+      chairCount < 1 ||
+      chairCount > 24
+    ) {
+      return;
+    }
+
+    const sources = candidateSourcesByChairCount.get(chairCount) ?? new Set<TableChairCandidateSource>();
+    sources.add(source);
+    candidateSourcesByChairCount.set(chairCount, sources);
+  };
+
+  for (const candidate of resolutionCandidate?.candidates ?? []) {
+    addCandidate(candidate.chairCount, candidate.source);
+  }
+
+  const candidates = [...candidateSourcesByChairCount.entries()]
+    .filter(
+      ([chairCount, sources]) =>
+        chairCount === entry.chairCount ||
+        [...sources].some((source) => source !== "validated_prior"),
+    )
+    .map(([chairCount]) => chairCount);
+
+  return candidates.length > 0 ? candidates : [entry.chairCount];
 }
 
 async function runPaddlePlanCropOcr(
@@ -514,10 +1782,11 @@ async function runPaddlePlanCropOcr(
       logPlanImport(debugContext, "image.paddle.started", {
         total: cropRegions.length,
       });
-      const { stdout, stderr } = await execFileWithImportAbort(
-        PADDLE_PYTHON_PATH,
+      const { stdout, stderr } = await execPythonWithImportAbort(
         [scriptPath, imagePath, regionsPath],
         {
+          preference: "paddle",
+          retryMissingPaddleSupport: true,
           timeout: PADDLE_PLAN_OCR_TIMEOUT_MS,
           maxBuffer: 8 * 1024 * 1024,
           signal,
@@ -558,9 +1827,10 @@ async function runAdvancedPlanVision(
   buffer: Buffer,
   hints: PlanImportHints | undefined,
   debugContext?: PlanImportDebugContext,
+  signal?: AbortSignal,
 ) {
   assertImportNotCancelled(debugContext);
-  const signal = getImportAbortSignal(debugContext);
+  const operationSignal = signal ?? getImportAbortSignal(debugContext);
   const scriptPath = path.resolve(process.cwd(), "scripts", "detect-plan-layout-advanced.py");
   const tempDir = path.resolve(process.cwd(), ".tmp-plan-import");
   const baseName = `advanced-${debugContext?.traceId ?? randomUUID()}`;
@@ -573,13 +1843,14 @@ async function runAdvancedPlanVision(
 
     try {
       logPlanImport(debugContext, "image.advanced.started");
-      const { stdout, stderr } = await execFileWithImportAbort(
-        PADDLE_PYTHON_PATH,
+      const { stdout, stderr } = await execPythonWithImportAbort(
         [scriptPath, imagePath, hintsPath],
         {
+          preference: "paddle",
+          retryMissingPaddleSupport: true,
           timeout: IMAGE_ADVANCED_VISION_TIMEOUT_MS,
           maxBuffer: 10 * 1024 * 1024,
-          signal,
+          signal: operationSignal,
           env: {
             ...process.env,
             PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK: "True",
@@ -675,7 +1946,7 @@ function chooseChairCountsClosestToTarget(
     const entry = entries[index];
     const rawCandidates = chairCandidatesByIndex[index] ?? [];
     const candidates = [...new Set(rawCandidates)].filter(
-      (value) => Number.isInteger(value) && value >= 2 && value <= 16,
+      (value) => Number.isInteger(value) && value >= 1 && value <= 24,
     );
 
     if (candidates.length === 0) {
@@ -766,16 +2037,19 @@ function applyHintGridLayout(entries: MesaSillaPair[], hints?: PlanImportHints) 
 
   const orderedEntries = sortEntriesBySpatialOrder(entries);
   const maxEntries = hints.expectedRowCount * hints.expectedColumnCount;
-  const effectiveEntries = orderedEntries.slice(0, maxEntries);
-  const density = clamp(Math.sqrt(effectiveEntries.length / 18), 0.42, 1);
-  const maxTableSpan = effectiveEntries.reduce((maxSpan, entry) => {
+  if (orderedEntries.length > maxEntries) {
+    return entries;
+  }
+
+  const density = clamp(Math.sqrt(orderedEntries.length / 18), 0.42, 1);
+  const maxTableSpan = orderedEntries.reduce((maxSpan, entry) => {
     const dimensions = getTableDimensions(entry.chairCount);
     return Math.max(maxSpan, dimensions.height + dimensions.chairOffset * 2 + 34);
   }, 260);
   const widthCompactness =
-    effectiveEntries.length <= 8 ? 0.44 : effectiveEntries.length <= 18 ? 0.58 : lerp(0.68, 0.8, density);
+    orderedEntries.length <= 8 ? 0.44 : orderedEntries.length <= 18 ? 0.58 : lerp(0.68, 0.8, density);
   const heightCompactness =
-    effectiveEntries.length <= 8 ? 0.26 : effectiveEntries.length <= 18 ? 0.4 : lerp(0.48, 0.62, density);
+    orderedEntries.length <= 8 ? 0.26 : orderedEntries.length <= 18 ? 0.4 : lerp(0.48, 0.62, density);
   const usableWidth = ROOM_LAYOUT_WIDTH * widthCompactness;
   const usableHeight = ROOM_LAYOUT_HEIGHT * heightCompactness;
   const centerX = ROOM_LAYOUT_WIDTH / 2;
@@ -841,7 +2115,7 @@ function applyHintGridLayout(entries: MesaSillaPair[], hints?: PlanImportHints) 
     ];
   }
 
-  return effectiveEntries.map((entry, index) => {
+  return orderedEntries.map((entry, index) => {
     const rowIndex = Math.floor(index / hints.expectedColumnCount!);
     const columnIndex = index % hints.expectedColumnCount!;
 
@@ -1287,6 +2561,29 @@ function sortEntriesBySpatialOrder(entries: MesaSillaPair[]) {
   return groupEntriesIntoRows(positionedEntries).flat();
 }
 
+function buildDetectedLayoutFromEntries(
+  entries: MesaSillaPair[],
+  sourceBounds: ImportSourceBounds | null | undefined,
+): DetectedImageLayout | null {
+  if (!sourceBounds) {
+    return null;
+  }
+
+  const positionedEntries = entries.filter(
+    (entry): entry is MesaSillaPair & { x: number; y: number } =>
+      typeof entry.x === "number" && typeof entry.y === "number",
+  );
+  if (positionedEntries.length < 6) {
+    return null;
+  }
+
+  return {
+    tables: positionedEntries,
+    sourceBounds,
+    nearestDistance: estimateNearestNeighborDistance(positionedEntries),
+  };
+}
+
 function mergeAiLayoutWithOrderedLabels(
   aiEntries: MesaSillaPair[],
   orderedLabelEntries: MesaSillaPair[],
@@ -1320,10 +2617,13 @@ function mergeAiLayoutWithOrderedLabels(
 async function detectTableLayoutFromImageGeometry(
   buffer: Buffer,
   debugContext?: PlanImportDebugContext,
+  signal?: AbortSignal,
 ) {
   assertImportNotCancelled(debugContext);
+  throwIfAborted(signal);
   logPlanImport(debugContext, "image.geometry.started");
   const metadata = await sharp(buffer).metadata();
+  throwIfAborted(signal);
   const originalWidth = metadata.width ?? 0;
   const originalHeight = metadata.height ?? 0;
   const resizedWidth = Math.min(1400, Math.max(1, originalWidth || 1400));
@@ -1334,6 +2634,7 @@ async function detectTableLayoutFromImageGeometry(
     .negate()
     .raw()
     .toBuffer({ resolveWithObject: true });
+  throwIfAborted(signal);
 
   const width = info.width;
   const height = info.height;
@@ -1342,6 +2643,10 @@ async function detectTableLayoutFromImageGeometry(
   const candidates: Array<{ x: number; y: number; area: number; width: number; height: number }> = [];
 
   for (let y = 0; y < height; y += 1) {
+    if (y % 24 === 0) {
+      throwIfAborted(signal);
+    }
+
     for (let x = 0; x < width; x += 1) {
       const startIndex = y * width + x;
       if (visited[startIndex] || data[startIndex] === 0) {
@@ -1562,7 +2867,7 @@ async function readChairCountFromCrop(
     }
 
     const score =
-      (rawText.includes("S:") || rawText.includes("S")) ? 100 : 0 +
+      ((rawText.includes("S:") || rawText.includes("S")) ? 100 : 0) +
       (chairCount >= 4 && chairCount <= 12 ? 30 : 0) +
       variant.bitmap.width * 0.001;
 
@@ -1579,8 +2884,10 @@ async function readLabelsFromDetectedImageLayout(
   buffer: Buffer,
   layout: DetectedImageLayout,
   debugContext?: PlanImportDebugContext,
+  signal?: AbortSignal,
 ) {
   assertImportNotCancelled(debugContext);
+  throwIfAborted(signal);
   logPlanImport(debugContext, "image.geometry_ocr.bootstrap");
   const tesseractModule = await import("tesseract.js");
   const tesseract = tesseractModule.default ?? tesseractModule;
@@ -1597,8 +2904,10 @@ async function readLabelsFromDetectedImageLayout(
     logger: () => {},
     cacheMethod: "none",
   });
+  const detachAbortHandler = attachWorkerAbortHandler(signal, worker);
 
   try {
+    throwIfAborted(signal);
     await worker.setParameters({
       tessedit_pageseg_mode: tesseract.PSM.SINGLE_BLOCK,
       preserve_interword_spaces: "1",
@@ -1621,6 +2930,7 @@ async function readLabelsFromDetectedImageLayout(
 
     for (const [index, table] of orderedTables.entries()) {
       assertImportNotCancelled(debugContext);
+      throwIfAborted(signal);
       if (typeof table.x !== "number" || typeof table.y !== "number") {
         continue;
       }
@@ -1668,7 +2978,8 @@ async function readLabelsFromDetectedImageLayout(
 
     return recognized;
   } finally {
-    await worker.terminate();
+    detachAbortHandler();
+    await worker.terminate().catch(() => {});
   }
 }
 
@@ -1697,6 +3008,56 @@ async function recoverChairCountsFromGeometryLayout(
     engine: "paddleocr",
   });
 
+  const validatedPriors = await getValidatedPlanPriors({
+    expectedTableCount: hints?.expectedTableCount,
+    expectedChairTotal: hints?.expectedChairTotal,
+    expectedRowCount: hints?.expectedRowCount,
+    expectedColumnCount: hints?.expectedColumnCount,
+    eventName: hints?.eventName,
+  });
+  const validatedMesaNumberPriors = await getValidatedMesaNumberPriors({
+    expectedTableCount: hints?.expectedTableCount,
+    expectedChairTotal: hints?.expectedChairTotal,
+    expectedRowCount: hints?.expectedRowCount,
+    expectedColumnCount: hints?.expectedColumnCount,
+    eventName: hints?.eventName,
+  });
+  const resolutionCandidates = buildInitialResolutionCandidates(
+    orderedEntries.slice(0, limit),
+    "current_selected",
+  );
+  for (const candidate of resolutionCandidates) {
+    const prior = findValidatedPriorForPosition(validatedPriors, candidate.positionIndex);
+    if (typeof prior?.mostCommonChairCount === "number") {
+      candidate.candidates.push({
+        chairCount: prior.mostCommonChairCount,
+        source: "validated_prior",
+        confidence: 0.35,
+        evidence: `validated-position-${candidate.positionIndex}`,
+      });
+    }
+
+    const mesaNumberPrior =
+      validatedMesaNumberPriors?.priorsByMesaNumber.find((entry) => entry.numero === candidate.numero)
+        ?.mostCommonChairCount ?? null;
+    if (typeof mesaNumberPrior === "number") {
+      candidate.candidates.push({
+        chairCount: mesaNumberPrior,
+        source: "validated_mesa_prior",
+        confidence: 0.48,
+        evidence: `validated-mesa-${candidate.numero}`,
+      });
+    }
+  }
+
+  if (validatedPriors) {
+    logPlanImport(debugContext, "image.chair_ocr.validated_priors", {
+      matchingExampleCount: validatedPriors.matchingExampleCount,
+      priorPositionCount: validatedPriors.priorsByPosition.length,
+      mesaNumberPriorCount: validatedMesaNumberPriors?.priorsByMesaNumber.length ?? 0,
+    });
+  }
+
   const cropRegions = orderedGeometry.slice(0, limit).map((geometryEntry, index) => ({
     index,
     ...clampCropRegion(
@@ -1719,12 +3080,10 @@ async function recoverChairCountsFromGeometryLayout(
     }
   }
 
-  const recoveredEntries: MesaSillaPair[] = [];
-  const chairCandidatesByIndex: number[][] = [];
-
   for (let index = 0; index < limit; index += 1) {
     assertImportNotCancelled(debugContext);
     const entry = orderedEntries[index];
+    const resolutionCandidate = resolutionCandidates[index];
     const result = resultsByIndex.get(index);
     const numeroCandidates = Array.isArray(result?.numeroCandidates)
       ? result!.numeroCandidates.filter((value) => Number.isInteger(value) && value > 0)
@@ -1733,26 +3092,36 @@ async function recoverChairCountsFromGeometryLayout(
       !result?.numero ||
       result.numero === entry.numero ||
       numeroCandidates.includes(entry.numero);
-    const chairCandidates = [
-      entry.chairCount,
-      result?.chairCount ?? null,
-      ...(Array.isArray(result?.chairCandidates) ? result!.chairCandidates : []),
-    ].filter((value): value is number => typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 24);
+    const firstPassChairCount =
+      sameMesaLikely &&
+      typeof result?.chairCount === "number" &&
+      Number.isInteger(result.chairCount) &&
+      result.chairCount >= 1 &&
+      result.chairCount <= 24
+        ? result.chairCount
+        : entry.chairCount;
 
-    const uniqueChairCandidates = [...new Set(chairCandidates)];
-    chairCandidatesByIndex.push(uniqueChairCandidates);
-
-    recoveredEntries.push({
-      ...entry,
-      chairCount:
-        sameMesaLikely &&
-        typeof result?.chairCount === "number" &&
-        Number.isInteger(result.chairCount) &&
-        result.chairCount >= 1 &&
-        result.chairCount <= 24
-          ? result.chairCount
-          : entry.chairCount,
-    });
+    if (sameMesaLikely) {
+      addChairCountCandidate(
+        resolutionCandidate,
+        result?.chairCount,
+        "paddle_full",
+        0.82,
+        `first-pass-index-${index}`,
+      );
+      for (const chairCandidate of result?.chairCandidates ?? []) {
+        addChairCountCandidate(
+          resolutionCandidate,
+          chairCandidate,
+          "ocr_fallback",
+          0.5,
+          `first-pass-fallback-index-${index}`,
+        );
+      }
+    }
+    if (resolutionCandidate) {
+      resolutionCandidate.selectedChairCount = firstPassChairCount;
+    }
 
     if ((index + 1) % 6 === 0 || index === limit - 1) {
       logPlanImport(debugContext, "image.chair_ocr.progress", {
@@ -1762,36 +3131,270 @@ async function recoverChairCountsFromGeometryLayout(
     }
   }
 
-  logPlanImport(debugContext, "image.chair_ocr.completed", {
-    total: recoveredEntries.length,
-    chairTotal: getChairTotal(recoveredEntries),
+  const firstPassResolutionCandidates = annotateSuspicionScores(
+    reselectResolutionCandidates(resolutionCandidates, validatedPriors, validatedMesaNumberPriors),
+    validatedPriors,
+    validatedMesaNumberPriors,
+    hints?.expectedChairTotal,
+  );
+  logPlanImport(debugContext, "image.chair_ocr.suspicious_tables", {
+    total: firstPassResolutionCandidates.filter((candidate) => candidate.suspicionScore > 0).length,
+    indices: firstPassResolutionCandidates
+      .filter((candidate) => candidate.suspicionScore > 0)
+      .map((candidate) => candidate.positionIndex),
+    stage: "first_pass",
   });
 
-  const normalizedRecoveredEntries = chooseChairCountsClosestToTarget(
-    recoveredEntries,
+  let resolvedResolutionCandidates = firstPassResolutionCandidates;
+  const suspiciousCropRegions = buildSuspiciousChairCropRegions(
+    layout,
+    firstPassResolutionCandidates,
+    halfWidth,
+    halfHeight,
+  );
+
+  let rereadCompleted = false;
+  if (suspiciousCropRegions.length > 0) {
+    const rereadRegionsByIndex = new Map<number, SuspiciousChairCropRegion>();
+    for (const region of suspiciousCropRegions) {
+      rereadRegionsByIndex.set(region.index, region);
+    }
+
+    logPlanImport(debugContext, "image.chair_ocr.reread.started", {
+      tableCount: new Set(suspiciousCropRegions.map((region) => region.tableIndex)).size,
+      cropCount: suspiciousCropRegions.length,
+    });
+
+    try {
+      const rereadResults = await runPaddlePlanCropOcr(
+        buffer,
+        suspiciousCropRegions.map(({ source: _source, evidence: _evidence, ...region }) => region),
+        debugContext,
+      );
+
+      for (const rereadResult of rereadResults) {
+        const rereadRegion =
+          typeof rereadResult.index === "number"
+            ? rereadRegionsByIndex.get(rereadResult.index)
+            : undefined;
+        if (!rereadRegion) {
+          continue;
+        }
+
+        const entry = orderedEntries[rereadRegion.tableIndex];
+        const resolutionCandidate = resolvedResolutionCandidates[rereadRegion.tableIndex];
+        if (!entry || !resolutionCandidate) {
+          continue;
+        }
+
+        const numeroCandidates = Array.isArray(rereadResult?.numeroCandidates)
+          ? rereadResult.numeroCandidates.filter((value) => Number.isInteger(value) && value > 0)
+          : [];
+        const sameMesaLikely =
+          !rereadResult?.numero ||
+          rereadResult.numero === entry.numero ||
+          numeroCandidates.includes(entry.numero);
+        if (!sameMesaLikely) {
+          continue;
+        }
+
+        addChairCountCandidate(
+          resolutionCandidate,
+          rereadResult?.chairCount,
+          rereadRegion.source,
+          getSuspiciousRereadConfidence(rereadRegion.source),
+          rereadRegion.evidence,
+        );
+
+        for (const [candidateIndex, chairCandidate] of (rereadResult?.chairCandidates ?? []).entries()) {
+          addChairCountCandidate(
+            resolutionCandidate,
+            chairCandidate,
+            rereadRegion.source,
+            Math.max(0.38, getSuspiciousRereadConfidence(rereadRegion.source) - candidateIndex * 0.08),
+            `${rereadRegion.evidence}-candidate-${candidateIndex + 1}`,
+          );
+        }
+      }
+
+      resolvedResolutionCandidates = annotateSuspicionScores(
+        reselectResolutionCandidates(
+          resolvedResolutionCandidates,
+          validatedPriors,
+          validatedMesaNumberPriors,
+        ),
+        validatedPriors,
+        validatedMesaNumberPriors,
+        hints?.expectedChairTotal,
+      );
+      rereadCompleted = true;
+
+      logPlanImport(debugContext, "image.chair_ocr.reread.completed", {
+        tableCount: new Set(suspiciousCropRegions.map((region) => region.tableIndex)).size,
+        cropCount: suspiciousCropRegions.length,
+      });
+    } catch (error) {
+      if (isAbortLikeError(error)) {
+        throw error;
+      }
+
+      logPlanImport(debugContext, "image.chair_ocr.reread.failed", serializeImportError(error));
+    }
+  }
+
+  const suspiciousResolutionCandidates = resolvedResolutionCandidates.filter(
+    (candidate) => candidate.suspicionScore > 0,
+  );
+  logPlanImport(debugContext, "image.chair_ocr.suspicious_tables", {
+    total: suspiciousResolutionCandidates.length,
+    indices: suspiciousResolutionCandidates.map((candidate) => candidate.positionIndex),
+    stage: rereadCompleted ? "after_reread" : "first_pass",
+  });
+
+  const finalSuspiciousCropRegions = buildFinalSuspiciousChairCropRegions(
+    layout,
+    resolvedResolutionCandidates,
+    halfWidth,
+    halfHeight,
+  );
+  if (finalSuspiciousCropRegions.length > 0) {
+    const finalRereadRegionsByIndex = new Map<number, SuspiciousChairCropRegion>();
+    for (const region of finalSuspiciousCropRegions) {
+      finalRereadRegionsByIndex.set(region.index, region);
+    }
+
+    logPlanImport(debugContext, "image.chair_ocr.final_reread.started", {
+      tableCount: new Set(finalSuspiciousCropRegions.map((region) => region.tableIndex)).size,
+      cropCount: finalSuspiciousCropRegions.length,
+    });
+
+    try {
+      const finalRereadResults = await runPaddlePlanCropOcr(
+        buffer,
+        finalSuspiciousCropRegions.map(({ source: _source, evidence: _evidence, ...region }) => region),
+        debugContext,
+      );
+
+      for (const rereadResult of finalRereadResults) {
+        const rereadRegion =
+          typeof rereadResult.index === "number"
+            ? finalRereadRegionsByIndex.get(rereadResult.index)
+            : undefined;
+        if (!rereadRegion) {
+          continue;
+        }
+
+        const entry = orderedEntries[rereadRegion.tableIndex];
+        const resolutionCandidate = resolvedResolutionCandidates[rereadRegion.tableIndex];
+        if (!entry || !resolutionCandidate) {
+          continue;
+        }
+
+        const numeroCandidates = Array.isArray(rereadResult?.numeroCandidates)
+          ? rereadResult.numeroCandidates.filter((value) => Number.isInteger(value) && value > 0)
+          : [];
+        const sameMesaLikely =
+          !rereadResult?.numero ||
+          rereadResult.numero === entry.numero ||
+          numeroCandidates.includes(entry.numero);
+        if (!sameMesaLikely) {
+          continue;
+        }
+
+        addChairCountCandidate(
+          resolutionCandidate,
+          rereadResult?.chairCount,
+          rereadRegion.source,
+          Math.min(0.92, getSuspiciousRereadConfidence(rereadRegion.source) + 0.05),
+          rereadRegion.evidence,
+        );
+        for (const [candidateIndex, chairCandidate] of (rereadResult?.chairCandidates ?? []).entries()) {
+          addChairCountCandidate(
+            resolutionCandidate,
+            chairCandidate,
+            rereadRegion.source,
+            Math.max(0.42, 0.88 - candidateIndex * 0.1),
+            `${rereadRegion.evidence}-candidate-${candidateIndex + 1}`,
+          );
+        }
+      }
+
+      resolvedResolutionCandidates = annotateSuspicionScores(
+        reselectResolutionCandidates(
+          resolvedResolutionCandidates,
+          validatedPriors,
+          validatedMesaNumberPriors,
+        ),
+        validatedPriors,
+        validatedMesaNumberPriors,
+        hints?.expectedChairTotal,
+      );
+
+      logPlanImport(debugContext, "image.chair_ocr.final_reread.completed", {
+        tableCount: new Set(finalSuspiciousCropRegions.map((region) => region.tableIndex)).size,
+        cropCount: finalSuspiciousCropRegions.length,
+      });
+    } catch (error) {
+      if (isAbortLikeError(error)) {
+        throw error;
+      }
+
+      logPlanImport(debugContext, "image.chair_ocr.final_reread.failed", serializeImportError(error));
+    }
+  }
+
+  const resolvedEntries = resolutionCandidatesToEntries(resolvedResolutionCandidates);
+  const chairCandidatesByIndex = resolvedEntries.map((entry, index) =>
+    buildNormalizationChairCandidates(entry, resolvedResolutionCandidates[index]),
+  );
+  const normalizedResolvedEntries = chooseChairCountsClosestToTarget(
+    resolvedEntries,
     chairCandidatesByIndex,
     hints?.expectedChairTotal,
   );
+  const swapResolution = maybeSwapNeighborCounts(
+    applyChairCountsToResolutionCandidates(
+      resolvedResolutionCandidates,
+      normalizedResolvedEntries,
+    ),
+    validatedPriors,
+    validatedMesaNumberPriors,
+    hints?.expectedChairTotal,
+  );
+  const finalResolutionCandidates = annotateSuspicionScores(
+    swapResolution.candidates,
+    validatedPriors,
+    validatedMesaNumberPriors,
+    hints?.expectedChairTotal,
+  );
+  const finalEntries = resolutionCandidatesToEntries(finalResolutionCandidates);
 
-  logPlanImport(debugContext, "image.chair_ocr.normalized", {
-    total: normalizedRecoveredEntries.length,
-    chairTotal: getChairTotal(normalizedRecoveredEntries),
+  logPlanImport(debugContext, "image.chair_ocr.final_resolution", {
+    suspiciousRemaining: finalResolutionCandidates.filter((candidate) => candidate.suspicionScore > 0).length,
+    chairTotal: getChairTotal(finalEntries),
+    swapCount: swapResolution.appliedSwaps.length,
+    swaps: swapResolution.appliedSwaps.map((swap) => ({
+      leftIndex: swap.leftIndex,
+      rightIndex: swap.rightIndex,
+      leftChairCount: swap.leftChairCount,
+      rightChairCount: swap.rightChairCount,
+    })),
+  });
+  logPlanImport(debugContext, "image.chair_ocr.suspicious_details", {
+    tables: buildSuspiciousResolutionDebugEntries(
+      finalResolutionCandidates,
+      validatedPriors,
+      validatedMesaNumberPriors,
+    ).slice(0, 12),
   });
 
-  const candidates = [orderedEntries, recoveredEntries, normalizedRecoveredEntries];
+  logPlanImport(debugContext, "image.chair_ocr.completed", {
+    total: finalEntries.length,
+    chairTotal: getChairTotal(finalEntries),
+    suspiciousRemaining: finalResolutionCandidates.filter((candidate) => candidate.suspicionScore > 0).length,
+  });
 
-  return [...candidates].sort((a, b) => {
-    const expectedChairTotal = hints?.expectedChairTotal;
-    if (typeof expectedChairTotal !== "number") {
-      return Math.abs(getChairTotal(a) - getChairTotal(orderedEntries)) -
-        Math.abs(getChairTotal(b) - getChairTotal(orderedEntries));
-    }
-
-    return (
-      Math.abs(getChairTotal(a) - expectedChairTotal) -
-      Math.abs(getChairTotal(b) - expectedChairTotal)
-    );
-  })[0];
+  return finalEntries;
 }
 
 async function recoverMesaSillaLabelsFromAiLayout(
@@ -2799,6 +4402,7 @@ async function callOpenAIOrderedLabelReader({
     "Ignora por completo texto global del plano como 42 MESAS, 12 PAX, 500 PAX, nombres del evento, marcas, logos, leyendas, DJ, barra, cotas o anotaciones tecnicas.",
     "Devuelve las mesas exactamente en orden visual: de arriba a abajo y, dentro de cada fila, de izquierda a derecha.",
     "NO renumeres mesas, NO inventes sillas y NO uses un valor global de PAX para varias mesas.",
+    "Si se aporta contexto validado, usalo solo como una referencia debil para comprobar coherencia global. Nunca copies secuencias historicas ni asignes M:x o S:x por analogia: cada valor debe leerse en la imagen actual.",
     "Si una mesa no se puede leer con suficiente seguridad, omítela antes de inventarla.",
     "Devuelve solo JSON valido siguiendo exactamente el esquema.",
     forceExactHints && typeof hints?.expectedTableCount === "number"
@@ -2823,7 +4427,7 @@ async function callOpenAIOrderedLabelReader({
       ? `Sillas totales esperadas: ${hints.expectedChairTotal}.`
       : "",
     hints?.learningContext
-      ? `Ejemplos validados disponibles:\n${hints.learningContext}`
+      ? `Contexto validado SOLO orientativo, nunca vinculante:\n${hints.learningContext}`
       : "",
   ]
     .filter(Boolean)
@@ -2888,6 +4492,7 @@ async function callOpenAIOrderedLabelReader({
   const responseJson = (await response.json()) as Record<string, unknown>;
   const rawOutput = extractResponseOutputText(responseJson);
   const parsed = parseJsonSafe<AiOrderedPlanPayload>(rawOutput);
+  const seen = new Set<number>();
   const tables = Array.isArray(parsed?.tables)
     ? parsed.tables
         .filter(
@@ -2902,6 +4507,14 @@ async function callOpenAIOrderedLabelReader({
           numero: table.numero,
           chairCount: table.chairCount,
         }))
+        .filter((table) => {
+          if (seen.has(table.numero)) {
+            return false;
+          }
+
+          seen.add(table.numero);
+          return true;
+        })
     : [];
 
   logPlanImport(debugContext, "openai.ordered_labels.completed", {
@@ -3972,9 +5585,10 @@ export async function importTablesFromPlanFile(
   logPlanImport(debugContext, "file.branch.image");
   logPlanImport(debugContext, "image.geometry.attempt");
   const geometricLayout = await withTimeout(
-    detectTableLayoutFromImageGeometry(bytes, debugContext),
+    (signal) => detectTableLayoutFromImageGeometry(bytes, debugContext, signal),
     IMAGE_GEOMETRY_TIMEOUT_MS,
     "image geometry detection",
+    { signal: getImportAbortSignal(debugContext) },
   ).catch((error) => {
     logPlanImport(debugContext, "image.geometry.failed", serializeImportError(error));
     return null;
@@ -4209,9 +5823,10 @@ export async function importTablesFromPlanFile(
       geometryEntryCount: geometricLayout.tables.length,
     });
     const geometricLabels = await withTimeout(
-      readLabelsFromDetectedImageLayout(bytes, geometricLayout, debugContext),
+      (signal) => readLabelsFromDetectedImageLayout(bytes, geometricLayout, debugContext, signal),
       IMAGE_GEOMETRY_OCR_TIMEOUT_MS,
       "image geometry OCR",
+      { signal: getImportAbortSignal(debugContext) },
     ).catch((error) => {
       logPlanImport(debugContext, "image.geometry_ocr.failed", serializeImportError(error));
       return [] as MesaSillaPair[];
@@ -4234,9 +5849,10 @@ export async function importTablesFromPlanFile(
   }
 
   const advancedVisionLayout = await withTimeout(
-    runAdvancedPlanVision(bytes, hints, debugContext),
+    (signal) => runAdvancedPlanVision(bytes, hints, debugContext, signal),
     IMAGE_ADVANCED_VISION_TIMEOUT_MS,
     "image advanced vision",
+    { signal: getImportAbortSignal(debugContext) },
   ).catch((error) => {
     logPlanImport(debugContext, "image.advanced.failed", serializeImportError(error));
     return null;
@@ -4340,18 +5956,49 @@ export async function importTablesFromPlanFile(
         return null;
       });
 
-      if (orderedAdvancedLabels && orderedAdvancedLabels.length > 0) {
-        const mergedAdvancedLabels = mergeGeometryWithOrderedLabels(
+      if (
+        orderedAdvancedLabels &&
+        hasSufficientOrderedLabelCoverage(
+          advancedDetectedLayout.tables.length,
+          orderedAdvancedLabels.length,
+        )
+      ) {
+        const trimmedAdvancedGeometry = trimSpatialEntriesToExpectedGrid(
           advancedDetectedLayout.tables,
+          hints,
+          orderedAdvancedLabels.length,
+        );
+        const advancedLayoutForResolution =
+          trimmedAdvancedGeometry.length === advancedDetectedLayout.tables.length
+            ? advancedDetectedLayout
+            : {
+                ...advancedDetectedLayout,
+                tables: trimmedAdvancedGeometry,
+                nearestDistance: estimateNearestNeighborDistance(trimmedAdvancedGeometry),
+              };
+
+        if (trimmedAdvancedGeometry.length !== advancedDetectedLayout.tables.length) {
+          logPlanImport(debugContext, "image.advanced.geometry_trimmed", {
+            before: advancedDetectedLayout.tables.length,
+            after: trimmedAdvancedGeometry.length,
+            orderedLabelCount: orderedAdvancedLabels.length,
+            expectedTableCount: hints?.expectedTableCount ?? null,
+            expectedRowCount: hints?.expectedRowCount ?? null,
+            expectedColumnCount: hints?.expectedColumnCount ?? null,
+          });
+        }
+
+        const mergedAdvancedLabels = mergeGeometryWithOrderedLabels(
+          advancedLayoutForResolution.tables,
           orderedAdvancedLabels,
         ).map((entry, index) => ({
           ...entry,
-          x: advancedDetectedLayout.tables[index]?.x ?? entry.x ?? 0,
-          y: advancedDetectedLayout.tables[index]?.y ?? entry.y ?? 0,
+          x: advancedLayoutForResolution.tables[index]?.x ?? entry.x ?? 0,
+          y: advancedLayoutForResolution.tables[index]?.y ?? entry.y ?? 0,
         }));
         advancedTables = await recoverChairCountsFromGeometryLayout(
           bytes,
-          advancedDetectedLayout,
+          advancedLayoutForResolution,
           mergedAdvancedLabels,
           hints,
           debugContext,
@@ -4360,6 +6007,13 @@ export async function importTablesFromPlanFile(
           return mergedAdvancedLabels;
         });
       } else {
+        if (orderedAdvancedLabels?.length) {
+          logPlanImport(debugContext, "image.advanced.ordered_labels_incomplete", {
+            geometryEntryCount: advancedDetectedLayout.tables.length,
+            orderedLabelCount: orderedAdvancedLabels.length,
+          });
+        }
+
         const advancedAiSupport = await importPlanWithOpenAIFromImage(
           bytes,
           mimeType,
@@ -4454,15 +6108,29 @@ export async function importTablesFromPlanFile(
     const mergedTables = aiResult?.tables.length && shouldUseAiCountsForImage(ocrResult.tables, aiResult.tables)
       ? mergeExactChairCounts(ocrResult.tables, aiResult.tables)
       : ocrResult.tables;
+    const ocrDetectedLayout = buildDetectedLayoutFromEntries(mergedTables, ocrResult.sourceBounds);
+    const refinedMergedTables = ocrDetectedLayout
+      ? await recoverChairCountsFromGeometryLayout(
+          bytes,
+          ocrDetectedLayout,
+          mergedTables,
+          hints,
+          debugContext,
+        ).catch((error) => {
+          logPlanImport(debugContext, "image.ocr_fallback.chair_ocr_failed", serializeImportError(error));
+          return mergedTables;
+        })
+      : mergedTables;
     logPlanImport(debugContext, "file.branch.image.completed", {
       strategy:
         aiResult?.tables.length && shouldUseAiCountsForImage(ocrResult.tables, aiResult.tables)
-          ? "ocr_with_ai_counts"
-          : "ocr_only",
-      entryCount: mergedTables.length,
+          ? "ocr_with_ai_counts_and_paddle_chairs"
+          : "ocr_only_with_paddle_chairs",
+      entryCount: refinedMergedTables.length,
+      refinedFromFallback: Boolean(ocrDetectedLayout),
     });
     return entriesToImportedTables(
-      applyHintGridLayout(mergedTables, hints),
+      applyHintGridLayout(refinedMergedTables, hints),
       existingTableCount,
       hints?.expectedRowCount && hints?.expectedColumnCount
         ? undefined

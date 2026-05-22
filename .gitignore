@@ -47,3 +47,5 @@ next-env.d.ts
 .tmp-plan-import/
 stdout-plan.json
 .plan-import-feedback/staged/
+.plan-import-feedback/validated/
+.plan-import-feedback/validated-index.json

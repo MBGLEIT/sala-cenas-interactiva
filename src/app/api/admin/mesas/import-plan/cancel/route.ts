@@ -9,6 +9,10 @@ import {
   markPlanImportTraceStatus,
   requestPlanImportCancellation,
 } from "@/lib/plan-import-runtime";
+import {
+  isRunningOnVercel,
+  PLAN_IMPORT_VERCEL_UNAVAILABLE_MESSAGE,
+} from "@/lib/runtime-env";
 import { adminImportPlanTraceSchema } from "@/lib/schemas";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
@@ -17,6 +21,13 @@ export const runtime = "nodejs";
 export async function POST(request: Request) {
   if (!isAdminAuthenticated()) {
     return NextResponse.json({ error: "No tienes acceso al panel admin." }, { status: 401 });
+  }
+
+  if (isRunningOnVercel()) {
+    return NextResponse.json(
+      { error: PLAN_IMPORT_VERCEL_UNAVAILABLE_MESSAGE, unsupported: true },
+      { status: 503 },
+    );
   }
 
   const body = await request.json().catch(() => null);
