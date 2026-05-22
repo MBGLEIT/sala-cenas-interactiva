@@ -1,0 +1,55 @@
+{
+  "traceId": "546717e1",
+  "eventoId": "ff8f747f-0564-4753-905b-d44f023df910",
+  "eventName": "PRUEBAS",
+  "fileName": "prueba plano imagen.png",
+  "hints": {
+    "expectedTableCount": 6,
+    "expectedRowCount": 2,
+    "expectedColumnCount": 3,
+    "expectedChairTotal": 34,
+    "eventName": "PRUEBAS"
+  },
+  "importedTables": [
+    {
+      "numero": 1,
+      "chairCount": 10,
+      "posX": 1176,
+      "posY": 1342
+    },
+    {
+      "numero": 4,
+      "chairCount": 5,
+      "posX": 2100,
+      "posY": 1342
+    },
+    {
+      "numero": 2,
+      "chairCount": 5,
+      "posX": 3024,
+      "posY": 1342
+    },
+    {
+      "numero": 6,
+      "chairCount": 2,
+      "posX": 1176,
+      "posY": 1658
+    },
+    {
+      "numero": 5,
+      "chairCount": 7,
+      "posX": 2100,
+      "posY": 1658
+    },
+    {
+      "numero": 3,
+      "chairCount": 5,
+      "posX": 3024,
+      "posY": 1658
+    }
+  ],
+  "stagedAt": "2026-05-21T08:48:29.606Z",
+  "imagePath": "C:\\Users\\Administrador\\Documents\\PROYECTO SALA DE CENAS MIGUEL\\sala-cenas-interactiva\\.plan-import-feedback\\validated\\2026-05-21-546717e1\\prueba plano imagen.png",
+  "imageSha256": "7bb25e754f1e105c5bd6fb40fd2d989841c71d4c87a4d3a689b5359114a20d69",
+  "validatedAt": "2026-05-21T08:49:24.183Z"
+}
