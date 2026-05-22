@@ -844,6 +844,90 @@ function mergeGeometryWithOrderedLabels(
   });
 }
 
+function trimSpatialEntriesToExpectedGrid(
+  entries: MesaSillaPair[],
+  hints?: PlanImportHints,
+  explicitTargetCount?: number,
+) {
+  const orderedEntries = sortEntriesBySpatialOrder(entries);
+  const targetCount =
+    explicitTargetCount ??
+    (typeof hints?.expectedTableCount === "number" && hints.expectedTableCount > 0
+      ? hints.expectedTableCount
+      : null);
+
+  if (!targetCount || orderedEntries.length <= targetCount) {
+    return orderedEntries;
+  }
+
+  const positionedEntries = orderedEntries.filter(
+    (entry): entry is MesaSillaPair & { x: number; y: number } =>
+      typeof entry.x === "number" && typeof entry.y === "number",
+  );
+
+  if (positionedEntries.length !== orderedEntries.length) {
+    return orderedEntries.slice(0, targetCount);
+  }
+
+  const expectedRowCount =
+    typeof hints?.expectedRowCount === "number" && hints.expectedRowCount > 0
+      ? hints.expectedRowCount
+      : null;
+  const expectedColumnCount =
+    typeof hints?.expectedColumnCount === "number" && hints.expectedColumnCount > 0
+      ? hints.expectedColumnCount
+      : null;
+  const rows = groupEntriesIntoRows(positionedEntries);
+  const limitedRows = expectedRowCount ? rows.slice(0, expectedRowCount) : rows;
+  const trimmedRows = limitedRows.map((row) => {
+    if (!expectedColumnCount || row.length <= expectedColumnCount) {
+      return row;
+    }
+
+    const diffs = row
+      .slice(1)
+      .map((entry, index) => Math.max(0, entry.x - row[index].x))
+      .filter((gap) => gap > 0)
+      .sort((a, b) => a - b);
+    const medianGap = diffs.length
+      ? diffs[Math.floor(diffs.length / 2)]
+      : Math.max(42, (row[row.length - 1].x - row[0].x) / Math.max(1, expectedColumnCount - 1));
+    const duplicateThreshold = clamp(Math.round(medianGap * 0.45), 28, 96);
+    const clusters: Array<Array<MesaSillaPair & { x: number; y: number }>> = [];
+
+    for (const entry of row) {
+      const currentCluster = clusters[clusters.length - 1];
+
+      if (!currentCluster) {
+        clusters.push([entry]);
+        continue;
+      }
+
+      const previous = currentCluster[currentCluster.length - 1];
+      if (Math.abs(entry.x - previous.x) <= duplicateThreshold) {
+        currentCluster.push(entry);
+        continue;
+      }
+
+      clusters.push([entry]);
+    }
+
+    const collapsed = clusters.map((cluster) => cluster[Math.floor(cluster.length / 2)]);
+    if (collapsed.length <= expectedColumnCount) {
+      return collapsed;
+    }
+
+    return collapsed.slice(0, expectedColumnCount);
+  });
+
+  const flattened = trimmedRows.flat();
+  if (flattened.length >= targetCount) {
+    return flattened.slice(0, targetCount);
+  }
+
+  return orderedEntries.slice(0, targetCount);
+}
+
 function getChairTotal(entries: Array<Pick<MesaSillaPair, "chairCount">>) {
   return entries.reduce((sum, entry) => sum + entry.chairCount, 0);
 }
@@ -920,6 +1004,13 @@ function isMeaningfulChairCandidateSource(source: TableChairCandidateSource) {
     source !== "validated_prior" &&
     source !== "validated_mesa_prior"
   );
+}
+
+function findValidatedMesaNumberPriorForTable(
+  priors: ValidatedMesaNumberPriors | null | undefined,
+  numero: number,
+) {
+  return priors?.priorsByMesaNumber.find((entry) => entry.numero === numero) ?? null;
 }
 
 function scoreResolutionCandidateSuspicion(
@@ -1016,17 +1107,23 @@ function scoreResolutionCandidateSuspicion(
 function annotateSuspicionScores(
   candidates: TableResolutionCandidate[],
   validatedPriors: ValidatedPlanPriors | null | undefined,
+  validatedMesaNumberPriors?: ValidatedMesaNumberPriors | null,
   expectedChairTotal?: number,
 ) {
   const currentChairTotal = candidates.reduce((sum, candidate) => sum + candidate.selectedChairCount, 0);
 
   return candidates.map((candidate) => {
     const prior = findValidatedPriorForPosition(validatedPriors, candidate.positionIndex);
+    const mesaNumberPrior = findValidatedMesaNumberPriorForTable(
+      validatedMesaNumberPriors,
+      candidate.numero,
+    );
     const competingCounts = candidate.candidates.map((entry) => entry.chairCount);
     const scored = scoreResolutionCandidateSuspicion(candidate, {
       expectedChairTotal,
       currentChairTotal,
-      validatedPriorChairCount: prior?.mostCommonChairCount ?? null,
+      validatedPriorChairCount:
+        mesaNumberPrior?.mostCommonChairCount ?? prior?.mostCommonChairCount ?? null,
       competingCounts,
     });
 
@@ -1390,6 +1487,101 @@ function buildSuspiciousChairCropRegions(
         },
       ] satisfies SuspiciousChairCropRegion[];
     });
+}
+
+function buildFinalSuspiciousChairCropRegions(
+  layout: DetectedImageLayout,
+  entries: TableResolutionCandidate[],
+  halfWidth: number,
+  halfHeight: number,
+) {
+  const orderedGeometry = sortEntriesBySpatialOrder(layout.tables).filter(
+    (entry): entry is MesaSillaPair & { x: number; y: number } =>
+      typeof entry.x === "number" && typeof entry.y === "number",
+  );
+  const targetEntries = entries
+    .filter((entry) => entry.suspicionScore > 0)
+    .sort((a, b) => b.suspicionScore - a.suspicionScore || a.positionIndex - b.positionIndex)
+    .slice(0, 4);
+  const focusHalfWidth = clamp(Math.round(halfWidth * 0.92), 46, 88);
+  const focusHalfHeight = clamp(Math.round(halfHeight * 0.7), 30, 58);
+  const bottomFocusHalfWidth = clamp(Math.round(halfWidth * 0.98), 48, 104);
+  const bottomFocusHeight = clamp(Math.round(halfHeight * 0.58), 24, 44);
+
+  return targetEntries.flatMap((entry) => {
+    const geometryEntry = orderedGeometry[entry.positionIndex];
+    if (!geometryEntry) {
+      return [];
+    }
+
+    const centerX = geometryEntry.x;
+    const centerY = geometryEntry.y;
+
+    return [
+      {
+        index: entry.positionIndex * 100 + 11,
+        tableIndex: entry.positionIndex,
+        source: "paddle_tight",
+        evidence: `final-tight-index-${entry.positionIndex}`,
+        ...clampCropRegion(
+          {
+            x: centerX - focusHalfWidth,
+            y: centerY - focusHalfHeight,
+            width: focusHalfWidth * 2,
+            height: focusHalfHeight * 2,
+          },
+          layout.sourceBounds.width,
+          layout.sourceBounds.height,
+        ),
+      },
+      {
+        index: entry.positionIndex * 100 + 12,
+        tableIndex: entry.positionIndex,
+        source: "paddle_bottom_band",
+        evidence: `final-bottom-focus-index-${entry.positionIndex}`,
+        ...clampCropRegion(
+          {
+            x: centerX - bottomFocusHalfWidth,
+            y: centerY + Math.round(halfHeight * 0.22),
+            width: bottomFocusHalfWidth * 2,
+            height: bottomFocusHeight,
+          },
+          layout.sourceBounds.width,
+          layout.sourceBounds.height,
+        ),
+      },
+    ] satisfies SuspiciousChairCropRegion[];
+  });
+}
+
+function buildSuspiciousResolutionDebugEntries(
+  candidates: TableResolutionCandidate[],
+  validatedPriors: ValidatedPlanPriors | null | undefined,
+  validatedMesaNumberPriors?: ValidatedMesaNumberPriors | null,
+) {
+  return candidates
+    .filter((candidate) => candidate.suspicionScore > 0)
+    .map((candidate) => ({
+      positionIndex: candidate.positionIndex,
+      numero: candidate.numero,
+      selectedChairCount: candidate.selectedChairCount,
+      suspicionScore: candidate.suspicionScore,
+      suspicionFlags: candidate.suspicionFlags,
+      validatedPrior:
+        findValidatedPriorForPosition(validatedPriors, candidate.positionIndex)?.mostCommonChairCount ?? null,
+      validatedMesaPrior:
+        findValidatedMesaNumberPriorForTable(validatedMesaNumberPriors, candidate.numero)?.mostCommonChairCount ??
+        null,
+      candidates: candidate.candidates
+        .slice()
+        .sort((left, right) => right.confidence - left.confidence)
+        .map((entry) => ({
+          chairCount: entry.chairCount,
+          source: entry.source,
+          confidence: entry.confidence,
+          evidence: entry.evidence ?? null,
+        })),
+    }));
 }
 
 function getSuspiciousRereadConfidence(source: SuspiciousChairCropRegion["source"]) {
@@ -2369,6 +2561,29 @@ function sortEntriesBySpatialOrder(entries: MesaSillaPair[]) {
   return groupEntriesIntoRows(positionedEntries).flat();
 }
 
+function buildDetectedLayoutFromEntries(
+  entries: MesaSillaPair[],
+  sourceBounds: ImportSourceBounds | null | undefined,
+): DetectedImageLayout | null {
+  if (!sourceBounds) {
+    return null;
+  }
+
+  const positionedEntries = entries.filter(
+    (entry): entry is MesaSillaPair & { x: number; y: number } =>
+      typeof entry.x === "number" && typeof entry.y === "number",
+  );
+  if (positionedEntries.length < 6) {
+    return null;
+  }
+
+  return {
+    tables: positionedEntries,
+    sourceBounds,
+    nearestDistance: estimateNearestNeighborDistance(positionedEntries),
+  };
+}
+
 function mergeAiLayoutWithOrderedLabels(
   aiEntries: MesaSillaPair[],
   orderedLabelEntries: MesaSillaPair[],
@@ -2919,6 +3134,7 @@ async function recoverChairCountsFromGeometryLayout(
   const firstPassResolutionCandidates = annotateSuspicionScores(
     reselectResolutionCandidates(resolutionCandidates, validatedPriors, validatedMesaNumberPriors),
     validatedPriors,
+    validatedMesaNumberPriors,
     hints?.expectedChairTotal,
   );
   logPlanImport(debugContext, "image.chair_ocr.suspicious_tables", {
@@ -3008,6 +3224,7 @@ async function recoverChairCountsFromGeometryLayout(
           validatedMesaNumberPriors,
         ),
         validatedPriors,
+        validatedMesaNumberPriors,
         hints?.expectedChairTotal,
       );
       rereadCompleted = true;
@@ -3034,6 +3251,98 @@ async function recoverChairCountsFromGeometryLayout(
     stage: rereadCompleted ? "after_reread" : "first_pass",
   });
 
+  const finalSuspiciousCropRegions = buildFinalSuspiciousChairCropRegions(
+    layout,
+    resolvedResolutionCandidates,
+    halfWidth,
+    halfHeight,
+  );
+  if (finalSuspiciousCropRegions.length > 0) {
+    const finalRereadRegionsByIndex = new Map<number, SuspiciousChairCropRegion>();
+    for (const region of finalSuspiciousCropRegions) {
+      finalRereadRegionsByIndex.set(region.index, region);
+    }
+
+    logPlanImport(debugContext, "image.chair_ocr.final_reread.started", {
+      tableCount: new Set(finalSuspiciousCropRegions.map((region) => region.tableIndex)).size,
+      cropCount: finalSuspiciousCropRegions.length,
+    });
+
+    try {
+      const finalRereadResults = await runPaddlePlanCropOcr(
+        buffer,
+        finalSuspiciousCropRegions.map(({ source: _source, evidence: _evidence, ...region }) => region),
+        debugContext,
+      );
+
+      for (const rereadResult of finalRereadResults) {
+        const rereadRegion =
+          typeof rereadResult.index === "number"
+            ? finalRereadRegionsByIndex.get(rereadResult.index)
+            : undefined;
+        if (!rereadRegion) {
+          continue;
+        }
+
+        const entry = orderedEntries[rereadRegion.tableIndex];
+        const resolutionCandidate = resolvedResolutionCandidates[rereadRegion.tableIndex];
+        if (!entry || !resolutionCandidate) {
+          continue;
+        }
+
+        const numeroCandidates = Array.isArray(rereadResult?.numeroCandidates)
+          ? rereadResult.numeroCandidates.filter((value) => Number.isInteger(value) && value > 0)
+          : [];
+        const sameMesaLikely =
+          !rereadResult?.numero ||
+          rereadResult.numero === entry.numero ||
+          numeroCandidates.includes(entry.numero);
+        if (!sameMesaLikely) {
+          continue;
+        }
+
+        addChairCountCandidate(
+          resolutionCandidate,
+          rereadResult?.chairCount,
+          rereadRegion.source,
+          Math.min(0.92, getSuspiciousRereadConfidence(rereadRegion.source) + 0.05),
+          rereadRegion.evidence,
+        );
+        for (const [candidateIndex, chairCandidate] of (rereadResult?.chairCandidates ?? []).entries()) {
+          addChairCountCandidate(
+            resolutionCandidate,
+            chairCandidate,
+            rereadRegion.source,
+            Math.max(0.42, 0.88 - candidateIndex * 0.1),
+            `${rereadRegion.evidence}-candidate-${candidateIndex + 1}`,
+          );
+        }
+      }
+
+      resolvedResolutionCandidates = annotateSuspicionScores(
+        reselectResolutionCandidates(
+          resolvedResolutionCandidates,
+          validatedPriors,
+          validatedMesaNumberPriors,
+        ),
+        validatedPriors,
+        validatedMesaNumberPriors,
+        hints?.expectedChairTotal,
+      );
+
+      logPlanImport(debugContext, "image.chair_ocr.final_reread.completed", {
+        tableCount: new Set(finalSuspiciousCropRegions.map((region) => region.tableIndex)).size,
+        cropCount: finalSuspiciousCropRegions.length,
+      });
+    } catch (error) {
+      if (isAbortLikeError(error)) {
+        throw error;
+      }
+
+      logPlanImport(debugContext, "image.chair_ocr.final_reread.failed", serializeImportError(error));
+    }
+  }
+
   const resolvedEntries = resolutionCandidatesToEntries(resolvedResolutionCandidates);
   const chairCandidatesByIndex = resolvedEntries.map((entry, index) =>
     buildNormalizationChairCandidates(entry, resolvedResolutionCandidates[index]),
@@ -3055,6 +3364,7 @@ async function recoverChairCountsFromGeometryLayout(
   const finalResolutionCandidates = annotateSuspicionScores(
     swapResolution.candidates,
     validatedPriors,
+    validatedMesaNumberPriors,
     hints?.expectedChairTotal,
   );
   const finalEntries = resolutionCandidatesToEntries(finalResolutionCandidates);
@@ -3069,6 +3379,13 @@ async function recoverChairCountsFromGeometryLayout(
       leftChairCount: swap.leftChairCount,
       rightChairCount: swap.rightChairCount,
     })),
+  });
+  logPlanImport(debugContext, "image.chair_ocr.suspicious_details", {
+    tables: buildSuspiciousResolutionDebugEntries(
+      finalResolutionCandidates,
+      validatedPriors,
+      validatedMesaNumberPriors,
+    ).slice(0, 12),
   });
 
   logPlanImport(debugContext, "image.chair_ocr.completed", {
@@ -5646,17 +5963,42 @@ export async function importTablesFromPlanFile(
           orderedAdvancedLabels.length,
         )
       ) {
-        const mergedAdvancedLabels = mergeGeometryWithOrderedLabels(
+        const trimmedAdvancedGeometry = trimSpatialEntriesToExpectedGrid(
           advancedDetectedLayout.tables,
+          hints,
+          orderedAdvancedLabels.length,
+        );
+        const advancedLayoutForResolution =
+          trimmedAdvancedGeometry.length === advancedDetectedLayout.tables.length
+            ? advancedDetectedLayout
+            : {
+                ...advancedDetectedLayout,
+                tables: trimmedAdvancedGeometry,
+                nearestDistance: estimateNearestNeighborDistance(trimmedAdvancedGeometry),
+              };
+
+        if (trimmedAdvancedGeometry.length !== advancedDetectedLayout.tables.length) {
+          logPlanImport(debugContext, "image.advanced.geometry_trimmed", {
+            before: advancedDetectedLayout.tables.length,
+            after: trimmedAdvancedGeometry.length,
+            orderedLabelCount: orderedAdvancedLabels.length,
+            expectedTableCount: hints?.expectedTableCount ?? null,
+            expectedRowCount: hints?.expectedRowCount ?? null,
+            expectedColumnCount: hints?.expectedColumnCount ?? null,
+          });
+        }
+
+        const mergedAdvancedLabels = mergeGeometryWithOrderedLabels(
+          advancedLayoutForResolution.tables,
           orderedAdvancedLabels,
         ).map((entry, index) => ({
           ...entry,
-          x: advancedDetectedLayout.tables[index]?.x ?? entry.x ?? 0,
-          y: advancedDetectedLayout.tables[index]?.y ?? entry.y ?? 0,
+          x: advancedLayoutForResolution.tables[index]?.x ?? entry.x ?? 0,
+          y: advancedLayoutForResolution.tables[index]?.y ?? entry.y ?? 0,
         }));
         advancedTables = await recoverChairCountsFromGeometryLayout(
           bytes,
-          advancedDetectedLayout,
+          advancedLayoutForResolution,
           mergedAdvancedLabels,
           hints,
           debugContext,
@@ -5766,15 +6108,29 @@ export async function importTablesFromPlanFile(
     const mergedTables = aiResult?.tables.length && shouldUseAiCountsForImage(ocrResult.tables, aiResult.tables)
       ? mergeExactChairCounts(ocrResult.tables, aiResult.tables)
       : ocrResult.tables;
+    const ocrDetectedLayout = buildDetectedLayoutFromEntries(mergedTables, ocrResult.sourceBounds);
+    const refinedMergedTables = ocrDetectedLayout
+      ? await recoverChairCountsFromGeometryLayout(
+          bytes,
+          ocrDetectedLayout,
+          mergedTables,
+          hints,
+          debugContext,
+        ).catch((error) => {
+          logPlanImport(debugContext, "image.ocr_fallback.chair_ocr_failed", serializeImportError(error));
+          return mergedTables;
+        })
+      : mergedTables;
     logPlanImport(debugContext, "file.branch.image.completed", {
       strategy:
         aiResult?.tables.length && shouldUseAiCountsForImage(ocrResult.tables, aiResult.tables)
-          ? "ocr_with_ai_counts"
-          : "ocr_only",
-      entryCount: mergedTables.length,
+          ? "ocr_with_ai_counts_and_paddle_chairs"
+          : "ocr_only_with_paddle_chairs",
+      entryCount: refinedMergedTables.length,
+      refinedFromFallback: Boolean(ocrDetectedLayout),
     });
     return entriesToImportedTables(
-      applyHintGridLayout(mergedTables, hints),
+      applyHintGridLayout(refinedMergedTables, hints),
       existingTableCount,
       hints?.expectedRowCount && hints?.expectedColumnCount
         ? undefined

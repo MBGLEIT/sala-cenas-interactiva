@@ -14,6 +14,10 @@ import {
 } from "@/lib/admin-panel";
 import { EventoSala } from "@/lib/dinner-room";
 import { getNextMesaPosition } from "@/lib/room-layout";
+import {
+  PLAN_IMPORT_FILE_SIZE_MESSAGE,
+  PLAN_IMPORT_SAFE_FILE_SIZE_BYTES,
+} from "@/lib/runtime-env";
 import { supabase } from "@/lib/supabase";
 
 type AdminDashboardProps = {
@@ -26,6 +30,7 @@ type JsonResponse = {
   error?: string;
   message?: string;
   cancelled?: boolean;
+  unsupported?: boolean;
   eventoId?: string;
   mesaId?: string;
   traceId?: string;
@@ -839,6 +844,17 @@ export default function AdminDashboard({
       return false;
     }
 
+    if (fileToImport.size > PLAN_IMPORT_SAFE_FILE_SIZE_BYTES) {
+      setImportProgress(null);
+      setError(PLAN_IMPORT_FILE_SIZE_MESSAGE);
+      pushToast({
+        tone: "error",
+        title: "Plano demasiado grande",
+        description: PLAN_IMPORT_FILE_SIZE_MESSAGE,
+      });
+      return false;
+    }
+
     setError("");
     setStatusMessage("");
 
@@ -946,7 +962,7 @@ export default function AdminDashboard({
       setError(message);
       pushToast({
         tone: "error",
-        title: "Plano no cargado",
+        title: result.unsupported ? "Importador no disponible" : "Plano no cargado",
         description: message,
       });
       return false;
