@@ -135,6 +135,15 @@ export async function claimNextPlanImportJob(workerMode: "worker" | "local" = "w
     throw new Error(`No se pudo reclamar el siguiente job pendiente: ${error.message}`);
   }
 
+  if (!data || typeof data !== "object") {
+    return null;
+  }
+
+  const maybeJob = data as Partial<PlanImportJobRow>;
+  if (!maybeJob.id || !maybeJob.trace_id) {
+    return null;
+  }
+
   return (data ?? null) as PlanImportJobRow | null;
 }
 
