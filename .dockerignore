@@ -1,0 +1,15 @@
+.git
+.next
+node_modules
+.plan-import-feedback
+.plan-import-runtime
+.tmp-plan-import
+import-test-dev.log
+import-test.log
+importer-dev.log
+importer-regression.log
+importer-start.log
+importer-test.log
+stderr-plan.log
+tsconfig.tsbuildinfo
+*.log

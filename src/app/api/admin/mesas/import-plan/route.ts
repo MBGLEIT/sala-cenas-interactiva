@@ -4,16 +4,23 @@ import {
   getValidatedPlanLearningContext,
   stageImportedPlanSample,
 } from "@/lib/plan-import-feedback";
+import {
+  buildPlanImportImageSha256,
+  ensurePlanImportJob,
+  upsertPlanImportSample,
+  updatePlanImportJob,
+  uploadPlanImportFile,
+  uploadPlanImportSampleFile,
+} from "@/lib/plan-import-cloud";
 import { importTablesFromPlanFile, type PlanImportHints, type ImportedPlanTable } from "@/lib/plan-import";
 import {
   isRunningOnVercel,
   PLAN_IMPORT_FILE_SIZE_MESSAGE,
   PLAN_IMPORT_SAFE_FILE_SIZE_BYTES,
-  PLAN_IMPORT_VERCEL_UNAVAILABLE_MESSAGE,
 } from "@/lib/runtime-env";
 import {
   appendPlanImportTraceLog,
-  assertPlanImportNotCancelled,
+  assertPlanImportNotCancelledAsync,
   beginPlanImportTrace,
   clearPlanImportAbortController,
   clearPlanImportCreatedMesas,
@@ -120,20 +127,6 @@ export async function POST(request: Request) {
     );
   }
 
-  if (isRunningOnVercel()) {
-    routeLog(traceId, "warn", "request.unsupported_on_vercel");
-    markPlanImportTraceStatus(traceId, "failed", PLAN_IMPORT_VERCEL_UNAVAILABLE_MESSAGE);
-    clearPlanImportAbortController(traceId);
-    return NextResponse.json(
-      {
-        error: PLAN_IMPORT_VERCEL_UNAVAILABLE_MESSAGE,
-        traceId,
-        unsupported: true,
-      },
-      { status: 503 },
-    );
-  }
-
   const formData = initialFormData;
   const eventoId = formData?.get("eventoId");
   const file = formData?.get("file");
@@ -216,6 +209,42 @@ export async function POST(request: Request) {
     },
   });
 
+  const uploadBytes = new Uint8Array(await file.arrayBuffer());
+  const uploadedFilePath = await uploadPlanImportFile(
+    traceId,
+    file.name,
+    file.type || "application/octet-stream",
+    uploadBytes,
+  ).catch((error) => {
+    routeLog(traceId, "warn", "request.cloud_upload_failed", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  });
+
+  await ensurePlanImportJob({
+    traceId,
+    eventoId: parsedBody.data.eventoId,
+    fileName: file.name,
+    fileMimeType: file.type || "application/octet-stream",
+    fileSize: file.size,
+    eventName: null,
+    filePath: uploadedFilePath,
+    hints: {
+      expectedTableCount: parsedBody.data.expectedTableCount,
+      expectedRowCount: parsedBody.data.expectedRowCount,
+      expectedColumnCount: parsedBody.data.expectedColumnCount,
+      expectedChairTotal: parsedBody.data.expectedChairTotal,
+    },
+    runtimeMode: isRunningOnVercel() ? "vercel" : "local",
+    status: isRunningOnVercel() ? "pending" : "running",
+  }).catch((error) => {
+    routeLog(traceId, "warn", "request.cloud_job_failed", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  });
+
   const { data: mesasExistentes, error: mesasExistentesError } = await supabaseAdmin
     .from("mesas")
     .select("numero")
@@ -240,6 +269,12 @@ export async function POST(request: Request) {
   routeLog(traceId, "info", "existing_tables.loaded", {
     count: existingNumbers.size,
   });
+  await updatePlanImportJob(traceId, {
+    event_name: eventoData?.nombre ?? null,
+    summary: isRunningOnVercel()
+      ? "Plano recibido y encolado para procesamiento cloud."
+      : "Plano recibido y listo para procesarse.",
+  }).catch(() => null);
 
   let importedTables;
   const importHints: PlanImportHints = {
@@ -257,7 +292,39 @@ export async function POST(request: Request) {
     });
   }
 
+  if (isRunningOnVercel()) {
+    routeLog(traceId, "info", "request.queued_for_worker", {
+      traceId,
+      filePath: uploadedFilePath,
+    });
+    markPlanImportTraceStatus(
+      traceId,
+      "running",
+      "Plano en cola para el worker de importacion.",
+    );
+    await updatePlanImportJob(traceId, {
+      status: "pending",
+      summary: "Plano en cola para el worker de importacion.",
+    }).catch(() => null);
+    clearPlanImportAbortController(traceId);
+    return NextResponse.json(
+      {
+        message:
+          "Plano recibido correctamente. La importacion se ha puesto en cola y empezara en cuanto el worker lo reclame.",
+        traceId,
+        queued: true,
+      },
+      { status: 202 },
+    );
+  }
+
   try {
+    await updatePlanImportJob(traceId, {
+      started_at: new Date().toISOString(),
+      summary: "Procesando importacion del plano.",
+      processor_version: "local-importer-v1",
+      status: "running",
+    }).catch(() => null);
     importedTables = await importTablesFromPlanFile(
       file,
       mesasExistentes?.length ?? 0,
@@ -293,7 +360,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    assertPlanImportNotCancelled(traceId);
+    await assertPlanImportNotCancelledAsync(traceId);
   } catch (error) {
     routeLog(traceId, "warn", "request.cancelled_before_insert");
     markPlanImportTraceStatus(traceId, "cancelled", "Importacion cancelada antes de guardar.");
@@ -311,6 +378,10 @@ export async function POST(request: Request) {
     importedTables: importedTables.length,
     sample: importedTables.slice(0, 5),
   });
+  await updatePlanImportJob(traceId, {
+    imported_tables: importedTables,
+    summary: `Importacion interpretada con ${importedTables.length} mesas antes de insertar.`,
+  }).catch(() => null);
 
   const importStats = getImportedPlanStats(importedTables);
   const validationErrors: string[] = [];
@@ -420,7 +491,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    assertPlanImportNotCancelled(traceId);
+    await assertPlanImportNotCancelledAsync(traceId);
   } catch {
     routeLog(traceId, "warn", "request.cancelled_before_tables_insert");
     markPlanImportTraceStatus(traceId, "cancelled", "Importacion cancelada antes de crear mesas.");
@@ -477,7 +548,7 @@ export async function POST(request: Request) {
   );
 
   try {
-    assertPlanImportNotCancelled(traceId);
+    await assertPlanImportNotCancelledAsync(traceId);
   } catch {
     if (mesasCreadas.length > 0) {
       await supabaseAdmin.from("mesas").delete().in("id", mesasCreadas.map((mesa) => mesa.id));
@@ -513,7 +584,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    assertPlanImportNotCancelled(traceId);
+    await assertPlanImportNotCancelledAsync(traceId);
   } catch {
     if (mesasCreadas.length > 0) {
       await supabaseAdmin.from("mesas").delete().in("id", mesasCreadas.map((mesa) => mesa.id));
@@ -544,6 +615,30 @@ export async function POST(request: Request) {
     "completed",
     `Importacion completada con ${importedTables.length} mesas y ${chairsPayload.length} sillas.`,
   );
+  await updatePlanImportJob(traceId, {
+    status: "review_pending",
+    imported_tables: importedTables,
+    created_mesa_ids: mesasCreadas.map((mesa) => mesa.id),
+    summary: `Importacion completada con ${importedTables.length} mesas y ${chairsPayload.length} sillas.`,
+    finished_at: new Date().toISOString(),
+  }).catch(() => null);
+  const stagedSampleImagePath = await uploadPlanImportSampleFile(
+    traceId,
+    file.name,
+    file.type || "application/octet-stream",
+    uploadBytes,
+  ).catch(() => null);
+  await upsertPlanImportSample({
+    traceId,
+    eventoId: parsedBody.data.eventoId,
+    status: "staged",
+    eventName: eventoData?.nombre ?? null,
+    fileName: file.name,
+    imagePath: stagedSampleImagePath,
+    imageSha256: buildPlanImportImageSha256(uploadBytes),
+    hints: importHints,
+    importedTables,
+  }).catch(() => null);
 
   void stageImportedPlanSample(
     {

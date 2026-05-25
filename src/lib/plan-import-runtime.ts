@@ -1,10 +1,16 @@
-import "server-only";
-
 import fs from "node:fs";
 import path from "node:path";
+import type { ImportedPlanTable } from "@/lib/plan-import";
+import {
+  appendPlanImportJobLog,
+  getPlanImportJobByTraceId,
+  updatePlanImportJob,
+} from "@/lib/plan-import-cloud";
 
 type PlanImportTraceStatus =
+  | "pending"
   | "running"
+  | "review_pending"
   | "completed"
   | "failed"
   | "cancel_requested"
@@ -28,6 +34,8 @@ export type PlanImportTraceSnapshot = {
   summary?: string;
   createdMesaIds?: string[];
   eventoId?: string;
+  eventoNombre?: string | null;
+  importedTables?: ImportedPlanTable[];
 };
 
 type PlanImportTraceRecord = PlanImportTraceSnapshot;
@@ -37,6 +45,7 @@ const MAX_TRACE_LOGS = 500;
 const traces = new Map<string, PlanImportTraceRecord>();
 const abortControllers = new Map<string, AbortController>();
 const abortPollers = new Map<string, ReturnType<typeof setInterval>>();
+const abortCloudPollInflight = new Set<string>();
 const RUNTIME_DIR = path.resolve(process.cwd(), ".plan-import-runtime");
 const TRACE_DIR = path.join(RUNTIME_DIR, "traces");
 
@@ -153,6 +162,9 @@ export function beginPlanImportTrace(traceId: string) {
   } satisfies PlanImportTraceRecord;
   traces.set(traceId, trace);
   writeTraceToDisk(trace);
+  void updatePlanImportJob(traceId, {
+    status: trace.status === "cancel_requested" ? "cancel_requested" : "running",
+  }).catch(() => {});
 }
 
 export function appendPlanImportTraceLog(
@@ -180,6 +192,7 @@ export function appendPlanImportTraceLog(
   }
 
   writeTraceToDisk(trace);
+  void appendPlanImportJobLog(traceId, level, stage, details).catch(() => {});
 }
 
 export function markPlanImportTraceStatus(
@@ -196,6 +209,14 @@ export function markPlanImportTraceStatus(
   trace.summary = summary ?? trace.summary;
   trace.updatedAt = new Date().toISOString();
   writeTraceToDisk(trace);
+  void updatePlanImportJob(traceId, {
+    status,
+    summary: trace.summary ?? null,
+    finished_at:
+      status === "completed" || status === "failed" || status === "cancelled"
+        ? trace.updatedAt
+        : null,
+  }).catch(() => {});
 }
 
 export function requestPlanImportCancellation(traceId: string) {
@@ -211,6 +232,10 @@ export function requestPlanImportCancellation(traceId: string) {
     new PlanImportCancelledError("La importacion del plano fue cancelada."),
   );
   writeTraceToDisk(trace);
+  void updatePlanImportJob(traceId, {
+    status: "cancel_requested",
+    summary: trace.summary ?? "Cancelacion solicitada.",
+  }).catch(() => {});
   return true;
 }
 
@@ -229,7 +254,37 @@ export function registerPlanImportAbortController(traceId: string) {
         controller.abort(
           new PlanImportCancelledError("La importacion del plano fue cancelada."),
         );
+        return;
       }
+
+      if (abortCloudPollInflight.has(traceId)) {
+        return;
+      }
+
+      abortCloudPollInflight.add(traceId);
+      void getPlanImportJobByTraceId(traceId)
+        .then((job) => {
+          if (job?.status !== "cancel_requested" && job?.status !== "cancelled") {
+            return;
+          }
+
+          const currentTrace = getMutableTrace(traceId);
+          if (currentTrace) {
+            currentTrace.cancelRequested = true;
+            currentTrace.status = "cancel_requested";
+            currentTrace.summary = currentTrace.summary ?? "Cancelacion solicitada.";
+            currentTrace.updatedAt = new Date().toISOString();
+            writeTraceToDisk(currentTrace);
+          }
+
+          controller.abort(
+            new PlanImportCancelledError("La importacion del plano fue cancelada."),
+          );
+        })
+        .catch(() => {})
+        .finally(() => {
+          abortCloudPollInflight.delete(traceId);
+        });
     }, 250);
     abortPollers.set(traceId, poller);
   }
@@ -242,6 +297,7 @@ export function getPlanImportAbortSignal(traceId: string) {
 
 export function clearPlanImportAbortController(traceId: string) {
   abortControllers.delete(traceId);
+  abortCloudPollInflight.delete(traceId);
   const poller = abortPollers.get(traceId);
   if (poller) {
     clearInterval(poller);
@@ -265,6 +321,9 @@ export function registerPlanImportCreatedMesas(
   ];
   trace.updatedAt = new Date().toISOString();
   writeTraceToDisk(trace);
+  void updatePlanImportJob(traceId, {
+    created_mesa_ids: trace.createdMesaIds,
+  }).catch(() => {});
 }
 
 export function clearPlanImportCreatedMesas(traceId: string) {
@@ -276,6 +335,9 @@ export function clearPlanImportCreatedMesas(traceId: string) {
   trace.createdMesaIds = [];
   trace.updatedAt = new Date().toISOString();
   writeTraceToDisk(trace);
+  void updatePlanImportJob(traceId, {
+    created_mesa_ids: [],
+  }).catch(() => {});
 }
 
 export function isPlanImportCancellationRequested(traceId: string) {
@@ -289,8 +351,61 @@ export function assertPlanImportNotCancelled(traceId: string) {
   }
 }
 
+export async function assertPlanImportNotCancelledAsync(traceId: string) {
+  assertPlanImportNotCancelled(traceId);
+
+  const job = await getPlanImportJobByTraceId(traceId).catch(() => null);
+  if (job?.status === "cancel_requested" || job?.status === "cancelled") {
+    const trace = getMutableTrace(traceId);
+    if (trace) {
+      trace.cancelRequested = true;
+      trace.status = "cancel_requested";
+      trace.summary = trace.summary ?? "Cancelacion solicitada.";
+      trace.updatedAt = new Date().toISOString();
+      writeTraceToDisk(trace);
+    }
+
+    throw new PlanImportCancelledError();
+  }
+}
+
 export function getPlanImportTraceSnapshot(traceId: string) {
   pruneExpiredTraces();
   const trace = getMutableTrace(traceId);
   return trace ? JSON.parse(JSON.stringify(trace)) as PlanImportTraceSnapshot : null;
+}
+
+export async function getPlanImportTraceSnapshotCloud(traceId: string) {
+  const job = await getPlanImportJobByTraceId(traceId);
+  if (!job) {
+    return null;
+  }
+
+  const { listPlanImportJobLogs } = await import("@/lib/plan-import-cloud");
+  const logs = await listPlanImportJobLogs(traceId);
+
+  return {
+    traceId: job.trace_id,
+    status: job.status,
+    createdAt: job.created_at,
+    updatedAt: job.updated_at,
+    cancelRequested: job.status === "cancel_requested" || job.status === "cancelled",
+    logs: logs.map((entry) => ({
+      id: String(entry.id),
+      at: String(entry.created_at),
+      level: entry.level,
+      stage: entry.stage,
+      details:
+        entry.details && typeof entry.details === "object"
+          ? (entry.details as Record<string, unknown>)
+          : undefined,
+    })),
+    summary: job.summary ?? job.error_message ?? undefined,
+    createdMesaIds: job.created_mesa_ids ?? undefined,
+    eventoId: job.evento_id,
+    eventoNombre: job.event_name ?? null,
+    importedTables: Array.isArray(job.imported_tables)
+      ? (job.imported_tables as ImportedPlanTable[])
+      : undefined,
+  } satisfies PlanImportTraceSnapshot;
 }

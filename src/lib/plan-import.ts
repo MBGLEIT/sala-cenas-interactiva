@@ -1,5 +1,3 @@
-import "server-only";
-
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
