@@ -1,9 +1,12 @@
-import "server-only";
-
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import {
+  getPlanImportSampleByTraceId,
+  listValidatedPlanImportSamples,
+  updatePlanImportSampleByTraceId,
+} from "@/lib/plan-import-cloud";
 import type { ImportedPlanTable, PlanImportHints } from "@/lib/plan-import";
 
 type StagedPlanImportPayload = {
@@ -80,6 +83,17 @@ type StoredValidatedPlanSample = StagedPlanImportPayload & {
   imageSha256?: string | null;
   stagedAt?: string;
   validatedAt?: string;
+};
+
+type CloudValidatedPlanLike = {
+  traceId: string;
+  eventoId: string;
+  eventName?: string | null;
+  fileName: string;
+  hints?: PlanImportHints;
+  importedTables: ImportedPlanTable[];
+  imageSha256?: string | null;
+  validatedAt?: string | null;
 };
 
 type HydratedValidatedIndexEntry = {
@@ -714,8 +728,26 @@ export async function stageImportedPlanSample(
 }
 
 export async function confirmImportedPlanSample(traceId: string) {
+  const cloudSample = await getPlanImportSampleByTraceId(traceId).catch(() => null);
+  if (cloudSample) {
+    await updatePlanImportSampleByTraceId(traceId, {
+      status: "validated",
+      validated_at: new Date().toISOString(),
+    }).catch(() => null);
+  }
+
   const jsonPath = getStagedJsonPath(traceId);
-  const raw = await fs.readFile(jsonPath, "utf8");
+  let raw: string;
+
+  try {
+    raw = await fs.readFile(jsonPath, "utf8");
+  } catch {
+    if (cloudSample) {
+      return;
+    }
+    throw new Error("No se encontro la muestra staged del importador.");
+  }
+
   const payload = JSON.parse(raw) as StoredValidatedPlanSample;
   const targetDir = path.join(
     VALIDATED_DIR,
@@ -799,6 +831,9 @@ export async function confirmImportedPlanSample(traceId: string) {
 }
 
 export async function cleanupImportedPlanSample(traceId: string) {
+  await updatePlanImportSampleByTraceId(traceId, {
+    status: "dismissed",
+  }).catch(() => null);
   const jsonPath = getStagedJsonPath(traceId);
 
   try {
@@ -813,7 +848,106 @@ export async function cleanupImportedPlanSample(traceId: string) {
   }
 }
 
+function scoreValidatedCloudSample(sample: CloudValidatedPlanLike, hints: ValidatedPlanMatchHints) {
+  const metrics = getImportedTableGridMetrics(sample.importedTables);
+  const row = {
+    expectedTableCount: sample.hints?.expectedTableCount ?? metrics.tableCount,
+    expectedChairTotal: sample.hints?.expectedChairTotal ?? metrics.chairTotal,
+    expectedRowCount: sample.hints?.expectedRowCount ?? metrics.rowCount,
+    expectedColumnCount: sample.hints?.expectedColumnCount ?? metrics.columnCount,
+    eventName: sample.eventName ?? null,
+  } satisfies ValidatedIndexRow;
+
+  const similarity = scoreValidatedIndexRow(row, hints);
+  const activeFieldCount =
+    Number(isInteger(hints.expectedTableCount)) +
+    Number(isInteger(hints.expectedChairTotal)) +
+    Number(isInteger(hints.expectedRowCount)) +
+    Number(isInteger(hints.expectedColumnCount)) +
+    Number(Boolean(normalizeEventName(hints.eventName)));
+
+  return {
+    sample,
+    similarity,
+    activeFieldCount,
+  };
+}
+
+async function getMatchedValidatedCloudSamples(hints: ValidatedPlanMatchHints, limit = 3) {
+  const cloudSamples = await listValidatedPlanImportSamples().catch(() => []);
+  return cloudSamples
+    .map((sample) =>
+      scoreValidatedCloudSample(
+        {
+          traceId: sample.trace_id,
+          eventoId: sample.evento_id,
+          eventName: sample.event_name,
+          fileName: sample.file_name,
+          hints: sample.hints as PlanImportHints,
+          importedTables: sample.imported_tables,
+          imageSha256: sample.image_sha256,
+          validatedAt: sample.validated_at,
+        },
+        hints,
+      ),
+    )
+    .sort((a, b) =>
+      a.similarity === b.similarity
+        ? String(b.sample.validatedAt ?? "").localeCompare(String(a.sample.validatedAt ?? ""))
+        : a.similarity - b.similarity,
+    )
+    .slice(0, limit)
+    .map((entry) => entry.sample);
+}
+
 export async function getValidatedPlanLearningContext(hints: PlanImportHints) {
+  const matchedCloudSamples = await getMatchedValidatedCloudSamples(hints, 2);
+  if (matchedCloudSamples.length > 0) {
+    const tableCounts: number[] = [];
+    const chairTotals: number[] = [];
+    const rowCounts: number[] = [];
+    const columnCounts: number[] = [];
+    const chairCounts: number[] = [];
+
+    for (const sample of matchedCloudSamples) {
+      const orderedTables = sortImportedTablesByVisualOrder(sample.importedTables);
+      const metrics = getImportedTableGridMetrics(orderedTables);
+      tableCounts.push(metrics.tableCount);
+      chairTotals.push(metrics.chairTotal);
+      rowCounts.push(metrics.rowCount);
+      columnCounts.push(metrics.columnCount);
+      chairCounts.push(...orderedTables.map((table) => table.chairCount));
+    }
+
+    const frequentChairCounts = getMostFrequentChairCounts(chairCounts);
+    const layoutSummary =
+      rowCounts.length > 0 && columnCounts.length > 0
+        ? `${formatObservedRange(rowCounts)} filas por ${formatObservedRange(columnCounts)} columnas aprox.`
+        : null;
+    const globalRangeSummary = [
+      formatObservedRange(tableCounts)
+        ? `${formatObservedRange(tableCounts)} mesas`
+        : null,
+      formatObservedRange(chairTotals)
+        ? `${formatObservedRange(chairTotals)} sillas totales`
+        : null,
+      layoutSummary,
+    ]
+      .filter(Boolean)
+      .join(", ");
+
+    return [
+      `${matchedCloudSamples.length} referencias validadas similares.`,
+      "Usalas solo como comprobacion secundaria de coherencia global; nunca copies una secuencia historica ni asignes valores por analogia.",
+      globalRangeSummary ? `Patrones globales observados: ${globalRangeSummary}.` : "",
+      frequentChairCounts.length > 0
+        ? `ChairCount frecuentes en ejemplos: ${frequentChairCounts.join(", ")}.`
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+
   const matchedRows = await getMatchedValidatedIndexRows(hints, 2);
   const tableCounts: number[] = [];
   const chairTotals: number[] = [];
@@ -875,6 +1009,31 @@ export async function getValidatedPlanLearningContext(hints: PlanImportHints) {
 export async function getValidatedPlanPriors(
   hints: ValidatedPlanMatchHints,
 ): Promise<ValidatedPlanPriors | null> {
+  const matchedCloudSamples = await getMatchedValidatedCloudSamples(hints, 2);
+  if (matchedCloudSamples.length > 0) {
+    const chairCountsByPosition = new Map<number, number[]>();
+
+    for (const sample of matchedCloudSamples) {
+      const orderedTables = sortImportedTablesByVisualOrder(sample.importedTables);
+      orderedTables.forEach((table, positionIndex) => {
+        const chairCounts = chairCountsByPosition.get(positionIndex) ?? [];
+        chairCounts.push(table.chairCount);
+        chairCountsByPosition.set(positionIndex, chairCounts);
+      });
+    }
+
+    return {
+      matchingExampleCount: matchedCloudSamples.length,
+      priorsByPosition: [...chairCountsByPosition.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([positionIndex, chairCounts]) => ({
+          positionIndex,
+          chairCounts,
+          mostCommonChairCount: getMostCommonChairCount(chairCounts),
+        })),
+    };
+  }
+
   const matchedRows = await getMatchedValidatedIndexRows(hints, 2);
   if (matchedRows.length === 0) {
     return null;
@@ -917,6 +1076,33 @@ export async function getValidatedPlanPriors(
 export async function getValidatedMesaNumberPriors(
   hints: ValidatedPlanMatchHints,
 ): Promise<ValidatedMesaNumberPriors | null> {
+  const matchedCloudSamples = await getMatchedValidatedCloudSamples(hints, 3);
+  if (matchedCloudSamples.length > 0) {
+    const chairCountsByMesaNumber = new Map<number, number[]>();
+
+    for (const sample of matchedCloudSamples) {
+      for (const table of sample.importedTables) {
+        if (!Number.isInteger(table.numero) || !Number.isInteger(table.chairCount)) {
+          continue;
+        }
+        const chairCounts = chairCountsByMesaNumber.get(table.numero) ?? [];
+        chairCounts.push(table.chairCount);
+        chairCountsByMesaNumber.set(table.numero, chairCounts);
+      }
+    }
+
+    return {
+      matchingExampleCount: matchedCloudSamples.length,
+      priorsByMesaNumber: [...chairCountsByMesaNumber.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([numero, chairCounts]) => ({
+          numero,
+          chairCounts,
+          mostCommonChairCount: getMostCommonChairCount(chairCounts),
+        })),
+    };
+  }
+
   const matchedRows = await getMatchedValidatedIndexRows(hints, 3);
   if (matchedRows.length === 0) {
     return null;

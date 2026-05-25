@@ -31,6 +31,7 @@ type JsonResponse = {
   message?: string;
   cancelled?: boolean;
   unsupported?: boolean;
+  queued?: boolean;
   eventoId?: string;
   mesaId?: string;
   traceId?: string;
@@ -54,11 +55,20 @@ type ImportTraceLogEntry = {
 
 type ImportProgressState = {
   traceId: string;
-  status: "running" | "cancel_requested" | "completed" | "failed" | "cancelled";
+  status:
+    | "pending"
+    | "running"
+    | "cancel_requested"
+    | "review_pending"
+    | "completed"
+    | "failed"
+    | "cancelled";
   logs: ImportTraceLogEntry[];
   expanded: boolean;
   summary?: string;
   cancelling: boolean;
+  eventoId: string;
+  eventoNombre: string;
 };
 
 type ReimportDialogMode = "choice" | "params" | null;
@@ -413,7 +423,11 @@ export default function AdminDashboard({
       return;
     }
 
-    if (activeImportStatus === "completed" || activeImportStatus === "failed") {
+    if (
+      activeImportStatus === "completed" ||
+      activeImportStatus === "failed" ||
+      activeImportStatus === "cancelled"
+    ) {
       return;
     }
 
@@ -427,6 +441,20 @@ export default function AdminDashboard({
         );
 
         if (!response.ok) {
+          const result = await parseJsonResponse(response);
+          if (cancelled) {
+            return;
+          }
+
+          importAbortRef.current = null;
+          setImportProgress(null);
+          setError(result.error ?? "No se pudo consultar el estado de la importacion.");
+          pushToast({
+            tone: "error",
+            title: "Seguimiento no disponible",
+            description:
+              result.error ?? "No se pudo consultar el estado de la importacion.",
+          });
           return;
         }
 
@@ -435,6 +463,10 @@ export default function AdminDashboard({
           logs: ImportTraceLogEntry[];
           summary?: string;
           cancelRequested?: boolean;
+          eventoId?: string;
+          eventoNombre?: string | null;
+          createdMesaIds?: string[];
+          importedTables?: ImportReviewState["importedTables"];
         };
 
         if (cancelled) {
@@ -452,6 +484,8 @@ export default function AdminDashboard({
             logs: snapshot.logs ?? current.logs,
             summary: snapshot.summary ?? current.summary,
             cancelling: snapshot.status === "cancel_requested" || current.cancelling,
+            eventoId: snapshot.eventoId ?? current.eventoId,
+            eventoNombre: snapshot.eventoNombre ?? current.eventoNombre,
           };
         });
 
@@ -467,6 +501,45 @@ export default function AdminDashboard({
               "La importacion se ha cancelado antes de guardar cambios en el evento.",
           });
           scheduleImportRefreshes();
+          return;
+        }
+
+        if (snapshot.status === "failed") {
+          importAbortRef.current = null;
+          setImportProgress(null);
+          setError(snapshot.summary ?? "La importacion del plano ha fallado.");
+          pushToast({
+            tone: "error",
+            title: "Importacion fallida",
+            description: snapshot.summary ?? "La importacion del plano ha fallado.",
+          });
+          scheduleImportRefreshes();
+          return;
+        }
+
+        if (
+          snapshot.status === "review_pending" &&
+          snapshot.importedTables?.length
+        ) {
+          importAbortRef.current = null;
+          setImportProgress(null);
+          setImportReview({
+            traceId: activeImportTraceId,
+            eventoId:
+              snapshot.eventoId ?? selectedEventId ?? panelData?.evento.id ?? "",
+            eventoNombre:
+              snapshot.eventoNombre ?? panelData?.evento.nombre ?? "Evento",
+            mesaIds: snapshot.createdMesaIds ?? [],
+            importedTables: snapshot.importedTables,
+          });
+          setShowImportRejectActions(false);
+          setStatusMessage(snapshot.summary ?? "Plano importado y listo para revision.");
+          pushToast({
+            tone: "success",
+            title: "Importacion completada",
+            description: snapshot.summary ?? "Revisa el plano antes de confirmarlo.",
+          });
+          scheduleImportRefreshes();
         }
       } catch {}
     };
@@ -480,7 +553,7 @@ export default function AdminDashboard({
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [activeImportStatus, activeImportTraceId, scheduleImportRefreshes]);
+  }, [activeImportStatus, activeImportTraceId, panelData?.evento.id, panelData?.evento.nombre, scheduleImportRefreshes, selectedEventId]);
 
   useEffect(() => {
     if (!selectedEventId) {
@@ -882,11 +955,13 @@ export default function AdminDashboard({
     importAbortRef.current = controller;
     setImportProgress({
       traceId: clientTraceId,
-      status: "running",
+      status: "pending",
       logs: [],
       expanded: false,
       summary: "Preparando la importacion del plano.",
       cancelling: false,
+      eventoId: selectedEventId,
+      eventoNombre: panelData?.evento.nombre ?? "Evento",
     });
 
     try {
@@ -969,6 +1044,26 @@ export default function AdminDashboard({
     }
 
     const message = result.message ?? "Plano cargado correctamente.";
+    if (result.queued) {
+      importAbortRef.current = null;
+      setImportProgress((current) =>
+        current
+          ? {
+              ...current,
+              status: "pending",
+              summary: message,
+            }
+          : current,
+      );
+      setStatusMessage(message);
+      pushToast({
+        tone: "success",
+        title: "Importacion en cola",
+        description: message,
+      });
+      return true;
+    }
+
     importAbortRef.current = null;
     setImportProgress(null);
     setStatusMessage(message);

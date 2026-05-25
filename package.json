@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "worker:plan-import": "tsx scripts/plan-import-worker.ts",
+    "worker:plan-import:once": "tsx scripts/plan-import-worker.ts --once",
+    "worker:plan-import:check": "tsx scripts/plan-import-worker.ts --dry-run"
   },
   "dependencies": {
     "@react-three/drei": "^9.122.0",
@@ -23,6 +26,7 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-konva": "^18.2.14",
+    "server-only": "^0.0.1",
     "sharp": "^0.34.5",
     "tesseract.js": "^7.0.0",
     "three": "^0.184.0",
@@ -41,6 +45,7 @@
     "eslint-config-next": "^14.2.35",
     "supabase": "^2.93.1",
     "tailwindcss": "^4",
+    "tsx": "^4.22.3",
     "typescript": "^5"
   }
 }
