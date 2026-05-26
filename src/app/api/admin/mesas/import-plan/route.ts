@@ -299,7 +299,7 @@ export async function POST(request: Request) {
     });
     markPlanImportTraceStatus(
       traceId,
-      "running",
+      "pending",
       "Plano en cola para el worker de importacion.",
     );
     await updatePlanImportJob(traceId, {
