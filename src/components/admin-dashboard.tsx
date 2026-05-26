@@ -307,6 +307,7 @@ export default function AdminDashboard({
   const [reimportExpectedColumnCount, setReimportExpectedColumnCount] = useState("");
   const [reimportExpectedChairTotal, setReimportExpectedChairTotal] = useState("");
   const importAbortRef = useRef<AbortController | null>(null);
+  const importStatusNotFoundCountRef = useRef(0);
 
   const asistentesSinReserva = useMemo(
     () =>
@@ -446,7 +447,33 @@ export default function AdminDashboard({
             return;
           }
 
+          const isTransientMissingTrace =
+            response.status === 404 &&
+            (activeImportStatus === "pending" ||
+              activeImportStatus === "running" ||
+              activeImportStatus === "cancel_requested");
+
+          if (isTransientMissingTrace) {
+            importStatusNotFoundCountRef.current += 1;
+
+            if (importStatusNotFoundCountRef.current <= 40) {
+              setImportProgress((current) =>
+                current && current.traceId === activeImportTraceId
+                  ? {
+                      ...current,
+                      summary:
+                        importStatusNotFoundCountRef.current <= 4
+                          ? "Sincronizando la importacion con la cola cloud..."
+                          : "La importacion ya esta en cola. Esperando a que el seguimiento cloud quede disponible...",
+                    }
+                  : current,
+              );
+              return;
+            }
+          }
+
           importAbortRef.current = null;
+          importStatusNotFoundCountRef.current = 0;
           setImportProgress(null);
           setError(result.error ?? "No se pudo consultar el estado de la importacion.");
           pushToast({
@@ -472,6 +499,8 @@ export default function AdminDashboard({
         if (cancelled) {
           return;
         }
+
+        importStatusNotFoundCountRef.current = 0;
 
         setImportProgress((current) => {
           if (!current || current.traceId !== activeImportTraceId) {
@@ -953,6 +982,7 @@ export default function AdminDashboard({
     let result: JsonResponse;
     const controller = new AbortController();
     importAbortRef.current = controller;
+    importStatusNotFoundCountRef.current = 0;
     setImportProgress({
       traceId: clientTraceId,
       status: "pending",
@@ -1046,6 +1076,7 @@ export default function AdminDashboard({
     const message = result.message ?? "Plano cargado correctamente.";
     if (result.queued) {
       importAbortRef.current = null;
+      importStatusNotFoundCountRef.current = 0;
       setImportProgress((current) =>
         current
           ? {
