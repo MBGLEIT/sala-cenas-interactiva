@@ -21,8 +21,8 @@ type DinnerRoomTable3DProps = {
 };
 
 const TABLE_WORLD_HEIGHT = 0.18;
-const HIT_WIDTH = 0.78;
-const HIT_DEPTH = 0.64;
+const HIT_WIDTH = 0.96;
+const HIT_DEPTH = 0.84;
 
 let woodTextureCache: CanvasTexture | null = null;
 let clothTextureCache: CanvasTexture | null = null;
@@ -203,12 +203,13 @@ export default function DinnerRoomTable3D({
   }, [sillas.length, tableDimensions, tableWorldDepth, tableWorldWidth]);
 
   function handleChairSelection(
+    pointerType: string | undefined,
     button: number,
     sillaId: string,
     sillaOcupada: boolean,
     sillaEsDelAsistente: boolean,
   ) {
-    if (button !== 0) {
+    if (pointerType !== "touch" && button !== 0) {
       return;
     }
 
@@ -305,6 +306,7 @@ export default function DinnerRoomTable3D({
 
                 event.stopPropagation();
                 handleChairSelection(
+                  event.pointerType,
                   event.button,
                   silla.id,
                   sillaOcupada,
