@@ -23,6 +23,7 @@
     "next": "^14.2.35",
     "pdf-parse": "^2.4.5",
     "pdfjs-dist": "^5.4.296",
+    "qrcode": "^1.5.4",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-konva": "^18.2.14",
