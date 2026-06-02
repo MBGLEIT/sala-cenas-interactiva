@@ -323,28 +323,16 @@ export default function Home() {
     () => findSelectedChairDetails(evento, selectedSillaId),
     [evento, selectedSillaId],
   );
-  const isPresencialRoom = screen === "room" && accessMode === "presencial";
   const canConfirmSelection =
     Boolean(selectedSillaId && asistente && !reservationLoading && !reservaActual);
 
   function dismissToast(id: string) {
-    setToasts((currentToasts) =>
-      currentToasts.filter((toast) => toast.id !== id),
-    );
+    setToasts((currentToasts) => currentToasts.filter((toast) => toast.id !== id));
   }
 
   function pushToast(toast: Omit<ToastItem, "id">) {
-    const id = `${toast.tone}-${Date.now()}-${Math.random()
-      .toString(36)
-      .slice(2, 8)}`;
-
-    setToasts((currentToasts) => [
-      ...currentToasts.slice(-2),
-      {
-        id,
-        ...toast,
-      },
-    ]);
+    const id = `${toast.tone}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setToasts((currentToasts) => [...currentToasts.slice(-2), { id, ...toast }]);
   }
 
   function resetReservationForm() {
@@ -412,15 +400,11 @@ export default function Home() {
     }
 
     const timeoutIds = toasts.map((toast) =>
-      window.setTimeout(() => {
-        dismissToast(toast.id);
-      }, 5200),
+      window.setTimeout(() => dismissToast(toast.id), 5200),
     );
 
     return () => {
-      timeoutIds.forEach((timeoutId) => {
-        window.clearTimeout(timeoutId);
-      });
+      timeoutIds.forEach((timeoutId) => window.clearTimeout(timeoutId));
     };
   }, [toasts]);
 
@@ -430,15 +414,16 @@ export default function Home() {
     }
 
     const focusInput = () => {
-      scannerInputRef.current?.focus();
+      try {
+        scannerInputRef.current?.focus({ preventScroll: true });
+      } catch {
+        // Some kiosk/touch browsers reject focusing visually hidden inputs.
+      }
     };
 
     focusInput();
     const intervalId = window.setInterval(focusInput, 1200);
-
-    return () => {
-      window.clearInterval(intervalId);
-    };
+    return () => window.clearInterval(intervalId);
   }, [screen]);
 
   useEffect(() => {
@@ -474,11 +459,7 @@ export default function Home() {
       .channel(`reservas-evento-${evento.id}`)
       .on(
         "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "reservas",
-        },
+        { event: "*", schema: "public", table: "reservas" },
         async (payload) => {
           const realtimePayload = payload as unknown as RealtimeReservaPayload;
           const changedSillaId =
@@ -514,12 +495,7 @@ export default function Home() {
       )
       .on(
         "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "mesas",
-          filter: `evento_id=eq.${evento.id}`,
-        },
+        { event: "*", schema: "public", table: "mesas", filter: `evento_id=eq.${evento.id}` },
         async () => {
           try {
             const eventoActualizado = await fetchEventoSala(evento.id);
@@ -531,11 +507,7 @@ export default function Home() {
       )
       .on(
         "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "sillas",
-        },
+        { event: "*", schema: "public", table: "sillas" },
         async () => {
           try {
             const eventoActualizado = await fetchEventoSala(evento.id);
@@ -547,12 +519,7 @@ export default function Home() {
       )
       .on(
         "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "eventos",
-          filter: `id=eq.${evento.id}`,
-        },
+        { event: "*", schema: "public", table: "eventos", filter: `id=eq.${evento.id}` },
         async () => {
           try {
             const eventoActualizado = await fetchEventoSala(evento.id);
@@ -578,25 +545,28 @@ export default function Home() {
     rawIdentifier: string,
     mode: "presencial" | "movil",
   ) {
-    const identificadorLimpio = rawIdentifier.trim().toUpperCase();
+    const cleanIdentifier = rawIdentifier.trim().toUpperCase();
 
-    if (!identificadorLimpio) {
-      setError("Escribe o escanea un identificador valido para continuar.");
+    if (!cleanIdentifier) {
+      setError("Escribe un identificador valido para continuar.");
+      pushToast({
+        tone: "error",
+        title: "Falta el identificador",
+        description: "Necesitamos el codigo del asistente para continuar.",
+      });
       return;
     }
 
     setLookupLoading(true);
+    setRoomLoading(false);
     setError("");
     setInfoMessage("");
+    setIdentityCandidate(null);
 
     try {
       const response = await fetch(
-        `/api/asistentes?identificador=${encodeURIComponent(
-          identificadorLimpio,
-        )}&ts=${Date.now()}`,
-        {
-          cache: "no-store",
-        },
+        `/api/asistentes?identificador=${encodeURIComponent(cleanIdentifier)}&ts=${Date.now()}`,
+        { cache: "no-store" },
       );
 
       const result = (await response.json()) as {
@@ -605,13 +575,9 @@ export default function Home() {
       };
 
       if (!response.ok || !result.asistente) {
-        const message =
-          result.error ?? "No se ha podido comprobar el identificador.";
-
+        const message = result.error ?? "No se ha podido comprobar el identificador.";
         setError(message);
-        if (mode === "presencial") {
-          setShowManualFallback(true);
-        }
+        setShowManualFallback(mode === "presencial");
         pushToast({
           tone: "error",
           title: "Asistente no encontrado",
@@ -627,33 +593,28 @@ export default function Home() {
           asistente: result.asistente,
           evento: eventoCargado,
         });
-        setInfoMessage("Comprueba la identidad antes de continuar.");
-        pushToast({
-          tone: "success",
-          title: "QR leido correctamente",
-          description: `Se ha identificado a ${result.asistente.nombre}.`,
-        });
+        setShowManualFallback(false);
+        setInfoMessage("Asistente encontrado. Confirma la identidad antes de continuar.");
       } else {
         setAsistente(result.asistente);
         setEvento(eventoCargado);
         setScreen("room");
         setInfoMessage("Asistente identificado correctamente.");
-        pushToast({
-          tone: "success",
-          title: "Acceso correcto",
-          description: `${result.asistente.nombre} puede acceder a la sala.`,
-        });
       }
-    } catch (identifyError) {
+
+      pushToast({
+        tone: "success",
+        title: "Acceso correcto",
+        description: `${result.asistente.nombre} puede continuar.`,
+      });
+    } catch (submitError) {
       const message =
-        identifyError instanceof Error
-          ? identifyError.message
+        submitError instanceof Error
+          ? submitError.message
           : "Ha ocurrido un problema de conexion.";
 
       setError(message);
-      if (mode === "presencial") {
-        setShowManualFallback(true);
-      }
+      setShowManualFallback(mode === "presencial");
       pushToast({
         tone: "error",
         title: "No se pudo continuar",
@@ -666,22 +627,18 @@ export default function Home() {
 
   async function handleMobileIdentifySubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    clearSessionState();
     await identifyAssistantByIdentifier(identificador, "movil");
   }
 
   async function handlePresencialManualSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    clearSessionState();
     await identifyAssistantByIdentifier(identificador, "presencial");
   }
 
   async function handleScannerSubmit() {
-    if (lookupLoading) {
+    if (lookupLoading || roomLoading) {
       return;
     }
-
-    clearSessionState();
     await identifyAssistantByIdentifier(scannerValue, "presencial");
   }
 
@@ -696,9 +653,8 @@ export default function Home() {
     setReservationLoading(true);
     setError("");
     setInfoMessage("Guardando reserva...");
-    setEvento(
-      applyOptimisticReservation(previousEvento, selectedSillaId, asistente.id),
-    );
+    setEvento(applyOptimisticReservation(previousEvento, selectedSillaId, asistente.id));
+    setSelectedSillaId(null);
 
     try {
       const response = await fetch("/api/reservas", {
@@ -724,10 +680,10 @@ export default function Home() {
       if (!response.ok) {
         setEvento(previousEvento);
         setSelectedSillaId(previousSelectedSillaId);
-        setShowReservationQuestionnaire(true);
-        const message =
-          result.error ?? "No se ha podido confirmar la reserva.";
-
+        if (accessMode === "presencial") {
+          setShowReservationQuestionnaire(true);
+        }
+        const message = result.error ?? "No se ha podido confirmar la reserva.";
         setError(message);
         pushToast({
           tone: "error",
@@ -756,7 +712,9 @@ export default function Home() {
     } catch {
       setEvento(previousEvento);
       setSelectedSillaId(previousSelectedSillaId);
-      setShowReservationQuestionnaire(true);
+      if (accessMode === "presencial") {
+        setShowReservationQuestionnaire(true);
+      }
       setError("Ha ocurrido un problema de conexion al guardar.");
       pushToast({
         tone: "error",
@@ -796,7 +754,6 @@ export default function Home() {
     if (!canConfirmSelection) {
       return;
     }
-
     setShowReservationSummary(true);
     setShowReservationQuestionnaire(false);
   }
@@ -815,11 +772,11 @@ export default function Home() {
     setShowReservationQuestionnaire(false);
   }
 
-  const roomOverlay = evento && asistente ? (
+  const presencialRoomOverlay = evento && asistente ? (
     <>
       <div className="pointer-events-auto absolute left-4 top-4 max-w-md rounded-[28px] border border-stone-200 bg-white/94 px-5 py-4 shadow-sm backdrop-blur">
         <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-700">
-          {accessMode === "presencial" ? "Reserva presencial" : "Reserva movil"}
+          Reserva presencial
         </p>
         <h2 className="mt-2 text-2xl font-semibold tracking-tight text-stone-950">
           {evento.nombre}
@@ -844,7 +801,11 @@ export default function Home() {
         </div>
       </div>
 
-      {selectedSillaId && seleccionActual && !reservaActual && !showReservationSummary && !showReservationQuestionnaire ? (
+      {selectedSillaId &&
+      seleccionActual &&
+      !reservaActual &&
+      !showReservationSummary &&
+      !showReservationQuestionnaire ? (
         <div className="pointer-events-auto absolute bottom-6 right-6 flex flex-col items-end gap-3">
           <div className="max-w-sm rounded-3xl border border-amber-300 bg-[linear-gradient(180deg,_#fff8db,_#fff1b8)] px-5 py-4 text-right shadow-sm">
             <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-800">
@@ -1043,7 +1004,7 @@ export default function Home() {
                 void handleScannerSubmit();
               }
             }}
-            className="sr-only"
+            className="absolute left-[-9999px] top-0 h-px w-px opacity-0"
             autoCapitalize="characters"
             autoCorrect="off"
             spellCheck={false}
@@ -1051,7 +1012,13 @@ export default function Home() {
 
           <div
             className="rounded-[32px] border border-dashed border-amber-300 bg-[linear-gradient(180deg,_#fff8db,_#fff1b8)] px-6 py-10 text-center shadow-[inset_0_1px_0_rgba(255,255,255,0.5)]"
-            onClick={() => scannerInputRef.current?.focus()}
+            onClick={() => {
+              try {
+                scannerInputRef.current?.focus({ preventScroll: true });
+              } catch {
+                // Ignore focus failures on kiosk browsers.
+              }
+            }}
           >
             <p className="text-sm font-semibold uppercase tracking-[0.3em] text-amber-800">
               Lector QR activo
@@ -1224,51 +1191,149 @@ export default function Home() {
             </section>
           ) : null}
 
-          <section className={accessMode === "presencial" ? "" : "rounded-[36px] border border-stone-200 bg-white px-4 py-4 shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-6 sm:py-6"}>
-            <DinnerRoomScene
-              evento={evento}
-              selectedSillaId={selectedSillaId}
-              currentAsistenteId={asistente.id}
-              selectionLocked={Boolean(reservaActual) || reservationLoading}
-              onSelectSilla={setSelectedSillaId}
-              overlay={roomOverlay}
-              touchMode
-              defaultViewMode="2d"
-              fullscreenBehavior={accessMode === "presencial" ? "locked" : "available"}
-              requestFullscreenOnMount={accessMode === "presencial"}
-            />
-          </section>
-
-          {accessMode === "movil" ? (
+          {accessMode === "presencial" ? (
+            <section>
+              <DinnerRoomScene
+                evento={evento}
+                selectedSillaId={selectedSillaId}
+                currentAsistenteId={asistente.id}
+                selectionLocked={Boolean(reservaActual) || reservationLoading}
+                onSelectSilla={setSelectedSillaId}
+                overlay={presencialRoomOverlay}
+                touchMode
+                defaultViewMode="2d"
+                fullscreenBehavior="locked"
+                requestFullscreenOnMount
+              />
+            </section>
+          ) : (
             <section className="rounded-[36px] border border-stone-200 bg-white px-8 py-8 shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-10">
-              {infoMessage ? (
-                <div className="mb-5">
-                  <InlineMessage tone="success" title="Estado" message={infoMessage} />
-                </div>
-              ) : null}
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-[0.3em] text-amber-700">
+                  Sala visual
+                </p>
+                <h2 className="mt-3 text-3xl font-semibold tracking-tight text-stone-950">
+                  {evento.nombre}
+                </h2>
+              </div>
 
-              {error ? (
-                <div className="mb-5">
-                  <InlineMessage tone="error" title="Error" message={error} />
-                </div>
-              ) : null}
-
-              <div className="grid gap-3 lg:grid-cols-4">
-                <StatBadge
-                  label="Tiempo real"
-                  value={realtimeConnected ? "Activo" : "En espera"}
-                  tone={realtimeConnected ? "success" : "neutral"}
+              <div className="mt-6">
+                <DinnerRoomScene
+                  evento={evento}
+                  selectedSillaId={selectedSillaId}
+                  currentAsistenteId={asistente.id}
+                  selectionLocked={Boolean(reservaActual) || reservationLoading}
+                  onSelectSilla={setSelectedSillaId}
+                  touchMode
                 />
-                {reservaActual ? (
+              </div>
+
+              <div className="mt-6 rounded-3xl bg-stone-100 px-6 py-5">
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={goToMovilIdentify}
+                    className="inline-flex min-h-12 items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+                  >
+                    Cambiar asistente
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmReservation}
+                    disabled={
+                      !selectedSillaId ||
+                      !asistente ||
+                      reservationLoading ||
+                      Boolean(reservaActual)
+                    }
+                    className="inline-flex min-h-12 items-center justify-center rounded-full bg-emerald-600 px-6 py-4 text-sm font-semibold uppercase tracking-[0.2em] text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-stone-300"
+                  >
+                    {reservationLoading
+                      ? "Guardando..."
+                      : reservaActual
+                        ? "Reserva ya asignada"
+                        : seleccionActual
+                          ? `Confirmar Mesa ${seleccionActual.mesaNumero}, Silla ${seleccionActual.sillaNumero}`
+                          : "Confirmar reserva"}
+                  </button>
+                </div>
+
+                {selectedSillaId && !reservaActual ? (
+                  <div className="mt-5 rounded-3xl border border-amber-300 bg-[linear-gradient(180deg,_#fff8db,_#fff1b8)] px-5 py-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]">
+                    <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-800">
+                      Datos importantes para la cena
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-amber-900/80">
+                      Marca aqui cualquier aviso relevante para que el equipo lo tenga presente antes del servicio.
+                    </p>
+                    <div className="mt-4">
+                      <ReservationChecklist
+                        esCeliaco={esCeliaco}
+                        setEsCeliaco={setEsCeliaco}
+                        tieneAlergias={tieneAlergias}
+                        setTieneAlergias={setTieneAlergias}
+                        movilidadReducida={movilidadReducida}
+                        setMovilidadReducida={setMovilidadReducida}
+                        observacionesReserva={observacionesReserva}
+                        setObservacionesReserva={setObservacionesReserva}
+                      />
+                    </div>
+                  </div>
+                ) : null}
+
+                {infoMessage ? (
+                  <div className="mt-5">
+                    <InlineMessage tone="success" title="Estado" message={infoMessage} />
+                  </div>
+                ) : null}
+
+                {error ? (
+                  <div className="mt-5">
+                    <InlineMessage tone="error" title="Error" message={error} />
+                  </div>
+                ) : null}
+
+                <div className="mt-5 grid gap-3 lg:grid-cols-4">
                   <StatBadge
-                    label="Tu reserva"
-                    value={`Mesa ${reservaActual.mesaNumero} · Silla ${reservaActual.sillaNumero}`}
-                    tone="warning"
+                    label="Tiempo real"
+                    value={realtimeConnected ? "Activo" : "En espera"}
+                    tone={realtimeConnected ? "success" : "neutral"}
                   />
+                  {reservaActual ? (
+                    <StatBadge
+                      label="Tu reserva"
+                      value={`Mesa ${reservaActual.mesaNumero} · Silla ${reservaActual.sillaNumero}`}
+                      tone="warning"
+                    />
+                  ) : null}
+                </div>
+
+                {selectedSillaId && !reservaActual ? (
+                  <div className="mt-5 rounded-3xl border border-amber-200 bg-white px-4 py-4">
+                    <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-700">
+                      Seleccion actual
+                    </p>
+                    <p className="mt-2 text-base leading-7 text-stone-700">
+                      {seleccionActual
+                        ? `Has elegido la Mesa ${seleccionActual.mesaNumero}, Silla ${seleccionActual.sillaNumero}.`
+                        : "Has elegido una silla para confirmar."}
+                    </p>
+                  </div>
+                ) : null}
+
+                {!selectedSillaId && !reservaActual ? (
+                  <div className="mt-5 rounded-3xl border border-stone-200 bg-white px-4 py-4">
+                    <p className="text-sm font-semibold uppercase tracking-[0.18em] text-stone-500">
+                      Elige una silla
+                    </p>
+                    <p className="mt-2 text-base leading-7 text-stone-600">
+                      Pulsa sobre una silla libre para seleccionarla.
+                    </p>
+                  </div>
                 ) : null}
               </div>
             </section>
-          ) : null}
+          )}
         </div>
       ) : null}
     </main>
