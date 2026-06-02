@@ -86,6 +86,26 @@ function StatBadge({
   );
 }
 
+function LegendPill({
+  colorClassName,
+  title,
+  description,
+}: {
+  colorClassName: string;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="flex items-start gap-3 rounded-2xl border border-stone-200 bg-white px-4 py-4">
+      <span className={`mt-1 h-4 w-4 rounded-full ${colorClassName}`} />
+      <div>
+        <p className="text-sm font-semibold text-stone-900">{title}</p>
+        <p className="mt-1 text-sm leading-6 text-stone-600">{description}</p>
+      </div>
+    </div>
+  );
+}
+
 function ScreenCard({
   eyebrow,
   title,
@@ -415,9 +435,9 @@ export default function Home() {
 
     const focusInput = () => {
       try {
-        scannerInputRef.current?.focus({ preventScroll: true });
+        scannerInputRef.current?.focus();
       } catch {
-        // Some kiosk/touch browsers reject focusing visually hidden inputs.
+        // Ignore focus failures on kiosk browsers.
       }
     };
 
@@ -993,42 +1013,40 @@ export default function Home() {
           title="Escanea el QR del asistente"
           description="La pantalla esta preparada para recibir automaticamente el codigo desde el lector QR."
         >
-          <input
-            ref={scannerInputRef}
-            type="text"
-            value={scannerValue}
-            onChange={(event) => setScannerValue(event.target.value.toUpperCase())}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                void handleScannerSubmit();
-              }
-            }}
-            className="absolute left-[-9999px] top-0 h-px w-px opacity-0"
-            autoCapitalize="characters"
-            autoCorrect="off"
-            spellCheck={false}
-          />
-
-          <div
-            className="rounded-[32px] border border-dashed border-amber-300 bg-[linear-gradient(180deg,_#fff8db,_#fff1b8)] px-6 py-10 text-center shadow-[inset_0_1px_0_rgba(255,255,255,0.5)]"
-            onClick={() => {
-              try {
-                scannerInputRef.current?.focus({ preventScroll: true });
-              } catch {
-                // Ignore focus failures on kiosk browsers.
-              }
-            }}
-          >
+          <div className="rounded-[32px] border border-dashed border-amber-300 bg-[linear-gradient(180deg,_#fff8db,_#fff1b8)] px-6 py-10 text-center shadow-[inset_0_1px_0_rgba(255,255,255,0.5)]">
             <p className="text-sm font-semibold uppercase tracking-[0.3em] text-amber-800">
               Lector QR activo
-            </p>
-            <p className="mt-4 text-3xl font-semibold tracking-tight text-stone-950">
-              {scannerValue.trim() || "Esperando codigo del asistente"}
             </p>
             <p className="mt-4 text-base leading-7 text-stone-700">
               Si el lector esta conectado, al leer el QR se identificara al asistente automaticamente.
             </p>
+
+            <div className="mx-auto mt-6 max-w-xl">
+              <label
+                htmlFor="scanner-identificador"
+                className="block text-sm font-semibold uppercase tracking-[0.2em] text-stone-600"
+              >
+                Codigo recibido
+              </label>
+              <input
+                ref={scannerInputRef}
+                id="scanner-identificador"
+                type="text"
+                value={scannerValue}
+                onChange={(event) => setScannerValue(event.target.value.toUpperCase())}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void handleScannerSubmit();
+                  }
+                }}
+                className="mt-3 w-full rounded-3xl border border-stone-300 bg-white px-5 py-5 text-center text-2xl font-semibold uppercase tracking-[0.2em] text-stone-900 outline-none transition focus:border-amber-500"
+                placeholder="Esperando codigo del asistente"
+                autoCapitalize="characters"
+                autoCorrect="off"
+                spellCheck={false}
+              />
+            </div>
           </div>
 
           <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
@@ -1162,36 +1180,8 @@ export default function Home() {
       ) : null}
 
       {screen === "room" && asistente && evento ? (
-        <div className="mx-auto max-w-[1800px] space-y-6">
-          {accessMode === "movil" ? (
-            <section className="rounded-[36px] border border-stone-200 bg-white px-8 py-8 shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-10">
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div>
-                  <p className="text-sm font-semibold uppercase tracking-[0.35em] text-amber-700">
-                    Reserva movil
-                  </p>
-                  <h1 className="mt-4 text-4xl font-semibold tracking-tight text-stone-950">
-                    {asistente.nombre}
-                  </h1>
-                  <p className="mt-2 text-sm font-semibold uppercase tracking-[0.18em] text-stone-500">
-                    {asistente.identificador}
-                  </p>
-                  <p className="mt-4 text-base leading-7 text-stone-600">{evento.nombre}</p>
-                </div>
-                <div className="flex flex-wrap gap-3">
-                  <button
-                    type="button"
-                    onClick={goToMovilIdentify}
-                    className="inline-flex min-h-12 items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
-                  >
-                    Cambiar asistente
-                  </button>
-                </div>
-              </div>
-            </section>
-          ) : null}
-
-          {accessMode === "presencial" ? (
+        accessMode === "presencial" ? (
+          <div className="mx-auto max-w-[1800px] space-y-6">
             <section>
               <DinnerRoomScene
                 evento={evento}
@@ -1206,18 +1196,36 @@ export default function Home() {
                 requestFullscreenOnMount
               />
             </section>
-          ) : (
+          </div>
+        ) : (
+          <div className="mx-auto max-w-7xl space-y-6">
+            <section className="rounded-[36px] border border-stone-200 bg-white px-8 py-8 shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-10">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-[0.35em] text-amber-700">
+                  Asistente identificado
+                </p>
+                <h1 className="mt-4 text-4xl font-semibold tracking-tight text-stone-950">
+                  {asistente.nombre}
+                </h1>
+                <p className="mt-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-500">
+                  {asistente.identificador}
+                </p>
+              </div>
+            </section>
+
             <section className="rounded-[36px] border border-stone-200 bg-white px-8 py-8 shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-10">
               <div>
                 <p className="text-sm font-semibold uppercase tracking-[0.3em] text-amber-700">
                   Sala visual
                 </p>
                 <h2 className="mt-3 text-3xl font-semibold tracking-tight text-stone-950">
-                  {evento.nombre}
+                  {evento.nombre ?? "Evento"}
                 </h2>
               </div>
+            </section>
 
-              <div className="mt-6">
+            <section className="rounded-[36px] border border-stone-200 bg-white px-8 py-8 shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-10">
+              <div className="mt-2">
                 <DinnerRoomScene
                   evento={evento}
                   selectedSillaId={selectedSillaId}
@@ -1233,7 +1241,7 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={goToMovilIdentify}
-                    className="inline-flex min-h-12 items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+                    className="inline-flex items-center justify-center rounded-full border border-stone-300 bg-white px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
                   >
                     Cambiar asistente
                   </button>
@@ -1246,7 +1254,7 @@ export default function Home() {
                       reservationLoading ||
                       Boolean(reservaActual)
                     }
-                    className="inline-flex min-h-12 items-center justify-center rounded-full bg-emerald-600 px-6 py-4 text-sm font-semibold uppercase tracking-[0.2em] text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-stone-300"
+                    className="inline-flex items-center justify-center rounded-full bg-emerald-600 px-6 py-4 text-sm font-semibold uppercase tracking-[0.2em] text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-stone-300"
                   >
                     {reservationLoading
                       ? "Guardando..."
@@ -1266,47 +1274,67 @@ export default function Home() {
                     <p className="mt-2 text-sm leading-6 text-amber-900/80">
                       Marca aqui cualquier aviso relevante para que el equipo lo tenga presente antes del servicio.
                     </p>
-                    <div className="mt-4">
-                      <ReservationChecklist
-                        esCeliaco={esCeliaco}
-                        setEsCeliaco={setEsCeliaco}
-                        tieneAlergias={tieneAlergias}
-                        setTieneAlergias={setTieneAlergias}
-                        movilidadReducida={movilidadReducida}
-                        setMovilidadReducida={setMovilidadReducida}
-                        observacionesReserva={observacionesReserva}
-                        setObservacionesReserva={setObservacionesReserva}
-                      />
+                    <div className="mt-4 grid gap-3 md:grid-cols-3">
+                      <label className="flex items-center gap-3 rounded-2xl border border-amber-300 bg-white/80 px-4 py-3 text-sm font-medium text-stone-800">
+                        <input
+                          type="checkbox"
+                          checked={esCeliaco}
+                          onChange={(event) => setEsCeliaco(event.target.checked)}
+                          className="h-4 w-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500"
+                        />
+                        Es celiaco
+                      </label>
+                      <label className="flex items-center gap-3 rounded-2xl border border-amber-300 bg-white/80 px-4 py-3 text-sm font-medium text-stone-800">
+                        <input
+                          type="checkbox"
+                          checked={tieneAlergias}
+                          onChange={(event) => setTieneAlergias(event.target.checked)}
+                          className="h-4 w-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500"
+                        />
+                        Tiene alergias
+                      </label>
+                      <label className="flex items-center gap-3 rounded-2xl border border-amber-300 bg-white/80 px-4 py-3 text-sm font-medium text-stone-800">
+                        <input
+                          type="checkbox"
+                          checked={movilidadReducida}
+                          onChange={(event) => setMovilidadReducida(event.target.checked)}
+                          className="h-4 w-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500"
+                        />
+                        Movilidad reducida
+                      </label>
                     </div>
+                    <label className="mt-4 block">
+                      <span className="text-sm font-semibold text-amber-900/80">
+                        Observaciones relevantes
+                      </span>
+                      <textarea
+                        value={observacionesReserva}
+                        onChange={(event) => setObservacionesReserva(event.target.value)}
+                        placeholder="Ejemplo: alergia a frutos secos, sin lactosa o necesita acceso facil."
+                        rows={3}
+                        className="mt-2 w-full rounded-2xl border border-amber-300 bg-white/90 px-4 py-3 text-sm text-stone-900 outline-none transition focus:border-amber-500"
+                      />
+                    </label>
                   </div>
                 ) : null}
 
                 {infoMessage ? (
-                  <div className="mt-5">
-                    <InlineMessage tone="success" title="Estado" message={infoMessage} />
+                  <div className="mt-5 rounded-3xl border border-emerald-200 bg-emerald-50 px-5 py-4 text-emerald-700">
+                    <p className="text-sm font-semibold uppercase tracking-[0.2em]">
+                      Estado
+                    </p>
+                    <p className="mt-2 text-base leading-7">{infoMessage}</p>
                   </div>
                 ) : null}
 
                 {error ? (
-                  <div className="mt-5">
-                    <InlineMessage tone="error" title="Error" message={error} />
+                  <div className="mt-5 rounded-3xl border border-rose-200 bg-rose-50 px-5 py-4 text-rose-700">
+                    <p className="text-sm font-semibold uppercase tracking-[0.2em]">
+                      Error
+                    </p>
+                    <p className="mt-2 text-base leading-7">{error}</p>
                   </div>
                 ) : null}
-
-                <div className="mt-5 grid gap-3 lg:grid-cols-4">
-                  <StatBadge
-                    label="Tiempo real"
-                    value={realtimeConnected ? "Activo" : "En espera"}
-                    tone={realtimeConnected ? "success" : "neutral"}
-                  />
-                  {reservaActual ? (
-                    <StatBadge
-                      label="Tu reserva"
-                      value={`Mesa ${reservaActual.mesaNumero} · Silla ${reservaActual.sillaNumero}`}
-                      tone="warning"
-                    />
-                  ) : null}
-                </div>
 
                 {selectedSillaId && !reservaActual ? (
                   <div className="mt-5 rounded-3xl border border-amber-200 bg-white px-4 py-4">
@@ -1331,10 +1359,75 @@ export default function Home() {
                     </p>
                   </div>
                 ) : null}
+
+                {reservaActual ? (
+                  <div className="mt-5 rounded-3xl border border-sky-200 bg-white px-4 py-4">
+                    <p className="text-sm font-semibold uppercase tracking-[0.18em] text-sky-700">
+                      Reserva existente
+                    </p>
+                    <p className="mt-2 text-base leading-7 text-stone-600">
+                      Este asistente ya tiene asignada la Mesa {reservaActual.mesaNumero}, Silla {reservaActual.sillaNumero}.
+                    </p>
+                  </div>
+                ) : null}
+
+                <div className="mt-5 grid gap-3 lg:grid-cols-2 2xl:grid-cols-4">
+                  <LegendPill
+                    colorClassName="bg-emerald-500"
+                    title="Silla libre"
+                    description="Puedes elegirla para este asistente."
+                  />
+                  <LegendPill
+                    colorClassName="bg-rose-500"
+                    title="Silla ocupada"
+                    description="Ya pertenece a otra persona."
+                  />
+                  <LegendPill
+                    colorClassName="bg-yellow-400"
+                    title="Silla seleccionada"
+                    description="Es la que se va a confirmar."
+                  />
+                  <LegendPill
+                    colorClassName="bg-sky-500"
+                    title="Tu reserva"
+                    description="Es la silla ya asignada a este asistente."
+                  />
+                </div>
+
+                <div className="mt-5 rounded-2xl border border-stone-200 bg-white px-4 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-semibold text-stone-800">Tiempo real</p>
+                    <span
+                      className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] ${
+                        realtimeConnected
+                          ? "bg-emerald-100 text-emerald-700"
+                          : "bg-stone-200 text-stone-600"
+                      }`}
+                    >
+                      {realtimeConnected ? "Activo" : "En espera"}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-sm leading-6 text-stone-500">
+                    {realtimeConnected
+                      ? "La sala se actualiza automaticamente cuando cambia una reserva."
+                      : "La actualizacion automatica no esta activa en este momento."}
+                  </p>
+                </div>
+
+                {reservationLoading ? (
+                  <div className="mt-5 rounded-3xl border border-amber-200 bg-white px-4 py-4">
+                    <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-700">
+                      Guardando
+                    </p>
+                    <p className="mt-2 text-base leading-7 text-stone-600">
+                      Estamos confirmando la reserva.
+                    </p>
+                  </div>
+                ) : null}
               </div>
             </section>
-          )}
-        </div>
+          </div>
+        )
       ) : null}
     </main>
   );
