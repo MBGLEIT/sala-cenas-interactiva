@@ -406,6 +406,14 @@ export default function Home() {
     clearSessionState();
   }
 
+  function resetMobileFlow() {
+    setScreen("movil-identify");
+    setError("");
+    setInfoMessage("");
+    setIdentificador("");
+    clearSessionState();
+  }
+
   useEffect(() => {
     selectedSillaIdRef.current = selectedSillaId;
   }, [selectedSillaId]);
@@ -647,7 +655,81 @@ export default function Home() {
 
   async function handleMobileIdentifySubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    await identifyAssistantByIdentifier(identificador, "movil");
+
+    const identificadorLimpio = identificador.trim().toUpperCase();
+
+    if (!identificadorLimpio) {
+      resetMobileFlow();
+      setError("Escribe tu identificador para continuar.");
+      pushToast({
+        tone: "error",
+        title: "Falta el identificador",
+        description: "Escribe el codigo del asistente para continuar.",
+      });
+      return;
+    }
+
+    setLookupLoading(true);
+    setError("");
+    setInfoMessage("");
+    setAsistente(null);
+    setEvento(null);
+    setSelectedSillaId(null);
+    setEsCeliaco(false);
+    setTieneAlergias(false);
+    setMovilidadReducida(false);
+    setObservacionesReserva("");
+
+    try {
+      const response = await fetch(
+        `/api/asistentes?identificador=${encodeURIComponent(
+          identificadorLimpio,
+        )}&ts=${Date.now()}`,
+        {
+          cache: "no-store",
+        },
+      );
+
+      const result = (await response.json()) as {
+        error?: string;
+        asistente?: AsistenteEncontrado;
+      };
+
+      if (!response.ok || !result.asistente) {
+        setError(result.error ?? "No se ha podido comprobar el identificador.");
+        pushToast({
+          tone: "error",
+          title: "Asistente no encontrado",
+          description:
+            result.error ?? "Revisa el identificador y vuelve a intentarlo.",
+        });
+        return;
+      }
+
+      setAsistente(result.asistente);
+      await cargarEvento(result.asistente.evento_id);
+      setScreen("room");
+      setInfoMessage("Asistente identificado correctamente.");
+      pushToast({
+        tone: "success",
+        title: "Acceso correcto",
+        description: `${result.asistente.nombre} puede acceder a la sala.`,
+      });
+    } catch (submitError) {
+      const message =
+        submitError instanceof Error
+          ? submitError.message
+          : "Ha ocurrido un problema de conexion.";
+
+      setError(message);
+      pushToast({
+        tone: "error",
+        title: "No se pudo continuar",
+        description: message,
+      });
+    } finally {
+      setLookupLoading(false);
+    }
   }
 
   async function handlePresencialManualSubmit(event: FormEvent<HTMLFormElement>) {
@@ -938,7 +1020,11 @@ export default function Home() {
   ) : null;
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#fff7ed,_#f5f5f4_55%,_#e7e5e4)] px-4 py-6 text-stone-900 sm:px-6 sm:py-12">
+    <main
+      className={`min-h-screen bg-[radial-gradient(circle_at_top,_#fff7ed,_#f5f5f4_55%,_#e7e5e4)] text-stone-900 ${
+        accessMode === "movil" ? "px-6 py-12" : "px-4 py-6 sm:px-6 sm:py-12"
+      }`}
+    >
       <ToastStack toasts={toasts} onDismiss={dismissToast} />
 
       {screen === "home" ? (
@@ -966,45 +1052,65 @@ export default function Home() {
       ) : null}
 
       {screen === "movil-identify" ? (
-        <ScreenCard
-          eyebrow="Reserva movil"
-          title="Identifica al asistente"
-          description="Introduce el codigo del asistente para entrar en la sala del evento y elegir su silla."
-        >
-          <IdentityCodeForm
-            identificador={identificador}
-            onChange={setIdentificador}
-            onSubmit={handleMobileIdentifySubmit}
-            submitLabel="Entrar en la sala"
-            busy={lookupLoading || roomLoading}
-          />
+        <div className="mx-auto max-w-2xl rounded-[36px] border border-stone-200 bg-white px-8 py-10 shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-10">
+          <p className="text-sm font-semibold uppercase tracking-[0.35em] text-amber-700">
+            Sala de Cenas Interactiva
+          </p>
+          <h1 className="mt-5 text-4xl font-semibold tracking-tight text-stone-950">
+            Identifica al asistente
+          </h1>
+          <p className="mt-5 text-lg leading-8 text-stone-600">
+            Introduce el codigo del asistente para entrar en la sala del evento.
+          </p>
 
-          <div className="mt-6 flex flex-wrap gap-3">
-            <button
-              type="button"
-              onClick={goHome}
-              className="inline-flex min-h-12 items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+          <form className="mt-10 space-y-4" onSubmit={handleMobileIdentifySubmit}>
+            <label
+              htmlFor="identificador"
+              className="block text-sm font-semibold uppercase tracking-[0.2em] text-stone-500"
             >
-              Volver al inicio
-            </button>
-          </div>
+              Identificador del asistente
+            </label>
+            <input
+              id="identificador"
+              name="identificador"
+              type="text"
+              value={identificador}
+              onChange={(event) => setIdentificador(event.target.value)}
+              placeholder="Pon aqui tu codigo de asistente"
+              className="w-full rounded-2xl border border-stone-300 bg-stone-50 px-5 py-4 text-lg font-medium uppercase tracking-[0.15em] text-stone-900 outline-none transition focus:border-amber-500 focus:bg-white"
+            />
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="submit"
+                disabled={lookupLoading || roomLoading}
+                className="inline-flex min-w-[220px] items-center justify-center rounded-full bg-stone-950 px-6 py-4 text-sm font-semibold uppercase tracking-[0.2em] text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-stone-400"
+              >
+                {lookupLoading ? "Entrando..." : "Entrar en la sala"}
+              </button>
+              <Link
+                href="/admin"
+                className="inline-flex min-w-[220px] items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-4 text-sm font-semibold uppercase tracking-[0.2em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+              >
+                ¿ERES ADMINISTRADOR?
+              </Link>
+            </div>
+          </form>
 
           {lookupLoading || roomLoading ? (
-            <div className="mt-8">
-              <InlineMessage
-                tone="info"
-                title="Preparando acceso"
-                message="Estamos comprobando el asistente y cargando la sala del evento."
-              />
+            <div className="mt-8 rounded-3xl border border-amber-200 bg-amber-50 px-5 py-4 text-amber-800">
+              Estamos preparando el acceso a la sala.
             </div>
           ) : null}
 
           {error ? (
-            <div className="mt-8">
-              <InlineMessage tone="error" title="Error" message={error} />
+            <div className="mt-8 rounded-3xl border border-rose-200 bg-rose-50 px-5 py-4 text-rose-700">
+              <p className="text-sm font-semibold uppercase tracking-[0.2em]">
+                Error
+              </p>
+              <p className="mt-2 text-base leading-7">{error}</p>
             </div>
           ) : null}
-        </ScreenCard>
+        </div>
       ) : null}
 
       {screen === "presencial-wait" ? (
@@ -1232,7 +1338,6 @@ export default function Home() {
                   currentAsistenteId={asistente.id}
                   selectionLocked={Boolean(reservaActual) || reservationLoading}
                   onSelectSilla={setSelectedSillaId}
-                  touchMode
                 />
               </div>
 
@@ -1240,7 +1345,7 @@ export default function Home() {
                 <div className="flex flex-wrap gap-3">
                   <button
                     type="button"
-                    onClick={goToMovilIdentify}
+                    onClick={resetMobileFlow}
                     className="inline-flex items-center justify-center rounded-full border border-stone-300 bg-white px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
                   >
                     Cambiar asistente
