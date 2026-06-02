@@ -21,6 +21,7 @@ type DinnerRoomPlan2DProps = {
   selectionLocked: boolean;
   onSelectSilla: (sillaId: string | null) => void;
   showCompatibilityMessage?: boolean;
+  touchMode?: boolean;
 };
 
 type PanOffset = {
@@ -89,6 +90,7 @@ export default function DinnerRoomPlan2D({
   selectionLocked,
   onSelectSilla,
   showCompatibilityMessage = false,
+  touchMode = false,
 }: DinnerRoomPlan2DProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const dragStateRef = useRef<{
@@ -330,14 +332,60 @@ export default function DinnerRoomPlan2D({
     handleChairSelection(sillaId, sillaOcupada, sillaEsDelAsistente);
   }
 
+  function adjustZoom(direction: "in" | "out") {
+    setZoom((previousZoom) => {
+      const nextZoom = clamp(
+        previousZoom + (direction === "in" ? 0.16 : -0.16),
+        MIN_ZOOM,
+        MAX_ZOOM,
+      );
+
+      if (nextZoom === previousZoom) {
+        return previousZoom;
+      }
+
+      setPan((currentPan) =>
+        clampPan(currentPan, nextZoom, sceneFrame.width, sceneFrame.height),
+      );
+
+      return nextZoom;
+    });
+  }
+
+  function resetView() {
+    const fitZoom = clamp(
+      Math.min(
+        (sceneFrame.width * 0.84) / Math.max(bounds.width + 180, 520),
+        (sceneFrame.height * 0.84) / Math.max(bounds.height + 180, 360),
+      ),
+      0.72,
+      1.38,
+    );
+
+    setZoom(fitZoom);
+    setPan(
+      clampPan(
+        {
+          x: fitZoom * (centerX - bounds.centerX),
+          y: fitZoom * (centerY - bounds.centerY),
+        },
+        fitZoom,
+        sceneFrame.width,
+        sceneFrame.height,
+      ),
+    );
+  }
+
   return (
-    <div className="flex h-full flex-col bg-[linear-gradient(180deg,_#ffffff,_#fafaf9)]">
+    <div className="relative flex h-full flex-col bg-[linear-gradient(180deg,_#ffffff,_#fafaf9)]">
       <div className="border-b border-stone-200 px-5 py-4">
         <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-700">
           Vista desde techo
         </p>
         <p className="mt-1 text-sm text-stone-600">
-          Rueda del raton para zoom. Arrastra para desplazarte por la sala.
+          {touchMode
+            ? "Arrastra para mover el plano. Usa los botones para acercar, alejar o centrar."
+            : "Rueda del raton para zoom. Arrastra para desplazarte por la sala."}
         </p>
         {showCompatibilityMessage ? (
           <p className="mt-1 text-xs leading-5 text-stone-500">
@@ -438,11 +486,11 @@ export default function DinnerRoomPlan2D({
                     return (
                       <g key={silla.id}>
                         <rect
-                          x={sillaX - 26}
-                          y={sillaY - 20}
-                          width="52"
-                          height="40"
-                          rx="14"
+                          x={sillaX - (touchMode ? 34 : 26)}
+                          y={sillaY - (touchMode ? 28 : 20)}
+                          width={touchMode ? 68 : 52}
+                          height={touchMode ? 56 : 40}
+                          rx={touchMode ? 18 : 14}
                           fill="transparent"
                           onPointerDown={handleChairPointerDown}
                           onPointerUp={(event) =>
@@ -529,6 +577,32 @@ export default function DinnerRoomPlan2D({
             </text>
           </g>
         </svg>
+      </div>
+
+      <div className="pointer-events-none absolute bottom-4 right-4 flex flex-col gap-3">
+        <button
+          type="button"
+          onClick={() => adjustZoom("in")}
+          className="pointer-events-auto inline-flex h-14 w-14 items-center justify-center rounded-full border border-stone-300 bg-white/95 text-2xl font-semibold text-stone-800 shadow-sm backdrop-blur transition hover:border-stone-950"
+          aria-label="Acercar"
+        >
+          +
+        </button>
+        <button
+          type="button"
+          onClick={() => adjustZoom("out")}
+          className="pointer-events-auto inline-flex h-14 w-14 items-center justify-center rounded-full border border-stone-300 bg-white/95 text-2xl font-semibold text-stone-800 shadow-sm backdrop-blur transition hover:border-stone-950"
+          aria-label="Alejar"
+        >
+          −
+        </button>
+        <button
+          type="button"
+          onClick={resetView}
+          className="pointer-events-auto inline-flex min-h-12 items-center justify-center rounded-full border border-stone-300 bg-white/95 px-4 py-3 text-xs font-semibold uppercase tracking-[0.18em] text-stone-700 shadow-sm backdrop-blur transition hover:border-stone-950 hover:text-stone-950"
+        >
+          Centrar
+        </button>
       </div>
     </div>
   );

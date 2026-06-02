@@ -213,6 +213,14 @@ type AiOrderedPlanPayload = {
   tables: AiOrderedPlanTable[];
 };
 
+type AiGridPlanPayload = {
+  rows: Array<{
+    tables: AiOrderedPlanTable[];
+  }>;
+};
+
+const SYNTHETIC_GRID_SPACING = 1000;
+
 type PlanImportDebugContext = {
   traceId: string;
 };
@@ -3811,6 +3819,113 @@ async function buildGeometryContactSheet(
   };
 }
 
+async function buildGeometryRowContactSheets(
+  buffer: Buffer,
+  layout: DetectedImageLayout,
+  mode: "original" | "threshold" = "original",
+) {
+  const orderedTables = sortEntriesBySpatialOrder(layout.tables).filter(
+    (entry): entry is MesaSillaPair & { x: number; y: number } =>
+      typeof entry.x === "number" && typeof entry.y === "number",
+  );
+
+  if (orderedTables.length === 0) {
+    return [];
+  }
+
+  const rows = groupEntriesIntoRows(orderedTables);
+  const nearestDistance = Math.max(90, layout.nearestDistance || 110);
+  const halfWidth = clamp(Math.round(nearestDistance * 0.56), 82, 150);
+  const halfHeight = clamp(Math.round(nearestDistance * 0.46), 72, 130);
+  const cellWidth = 220;
+  const cellHeight = 190;
+  const padding = 18;
+  const rowSheets: Array<{ buffer: Buffer; count: number }> = [];
+
+  for (const row of rows) {
+    const canvasWidth = Math.max(1, row.length) * cellWidth;
+    const canvasHeight = cellHeight;
+    const composites: sharp.OverlayOptions[] = [];
+
+    for (let columnIndex = 0; columnIndex < row.length; columnIndex += 1) {
+      const table = row[columnIndex];
+      const cropRegion = clampCropRegion(
+        {
+          x: table.x - halfWidth,
+          y: table.y - halfHeight,
+          width: halfWidth * 2,
+          height: halfHeight * 2,
+        },
+        layout.sourceBounds.width,
+        layout.sourceBounds.height,
+      );
+
+      let cropPipeline = sharp(buffer)
+        .extract({
+          left: cropRegion.x,
+          top: cropRegion.y,
+          width: cropRegion.width,
+          height: cropRegion.height,
+        })
+        .greyscale()
+        .normalize();
+
+      if (mode === "threshold") {
+        cropPipeline = cropPipeline.modulate({ brightness: 1.05 }).threshold(178);
+      }
+
+      const cropped = await cropPipeline
+        .resize({
+          width: cellWidth - padding * 2,
+          height: cellHeight - padding * 2,
+          fit: "contain",
+          background: { r: 255, g: 255, b: 255, alpha: 1 },
+        })
+        .png()
+        .toBuffer();
+
+      const labelSvg = Buffer.from(`
+        <svg width="${cellWidth}" height="${cellHeight}" xmlns="http://www.w3.org/2000/svg">
+          <rect x="0" y="0" width="${cellWidth}" height="${cellHeight}" rx="18" ry="18" fill="#ffffff"/>
+          <text x="16" y="26" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#111827">
+            Pos ${columnIndex + 1}
+          </text>
+        </svg>
+      `);
+
+      composites.push({
+        input: labelSvg,
+        left: columnIndex * cellWidth,
+        top: 0,
+      });
+      composites.push({
+        input: cropped,
+        left: columnIndex * cellWidth + padding,
+        top: padding + 10,
+      });
+    }
+
+    const rowBuffer = await sharp({
+      create: {
+        width: canvasWidth,
+        height: canvasHeight,
+        channels: 4,
+        background: { r: 248, g: 250, b: 252, alpha: 1 },
+      },
+    })
+      .composite(composites)
+      .png()
+      .toBuffer();
+
+    rowSheets.push({
+      buffer: rowBuffer,
+      count: row.length,
+    });
+  }
+
+  return rowSheets;
+}
+
 async function runOcrVariantBuffer(
   worker: OcrWorkerLike,
   variant: OcrVariant,
@@ -4524,6 +4639,207 @@ async function callOpenAIOrderedLabelReader({
   return tables;
 }
 
+async function callOpenAIGridLabelReader({
+  inputItems,
+  sourceLabel,
+  hints,
+  reviewContext,
+  debugContext,
+}: {
+  inputItems: Array<Record<string, unknown>>;
+  sourceLabel: string;
+  hints: PlanImportHints & {
+    expectedRowCount: number;
+    expectedColumnCount: number;
+  };
+  reviewContext?: string;
+  debugContext?: PlanImportDebugContext;
+}) {
+  const apiKey = getOpenAIApiKey();
+
+  if (!apiKey) {
+    logPlanImport(debugContext, "openai.grid_labels.skipped", {
+      sourceLabel,
+      reason: "missing_api_key",
+    });
+    return null;
+  }
+
+  logPlanImport(debugContext, "openai.grid_labels.started", {
+    sourceLabel,
+    inputItems: inputItems.length,
+    model: OPENAI_IMPORT_MODEL,
+    expectedRowCount: hints.expectedRowCount,
+    expectedColumnCount: hints.expectedColumnCount,
+  });
+
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    required: ["rows"],
+    properties: {
+      rows: {
+        type: "array",
+        minItems: hints.expectedRowCount,
+        maxItems: hints.expectedRowCount,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["tables"],
+          properties: {
+            tables: {
+              type: "array",
+              minItems: hints.expectedColumnCount,
+              maxItems: hints.expectedColumnCount,
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["numero", "chairCount"],
+                properties: {
+                  numero: { type: "integer" },
+                  chairCount: { type: "integer" },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  };
+
+  const instructions = [
+    "Eres un sistema de lectura de planos de mesas para eventos.",
+    "Debes devolver una matriz exacta de mesas visibles organizada por filas visuales.",
+    `Devuelve exactamente ${hints.expectedRowCount} filas.`,
+    `Cada fila debe contener exactamente ${hints.expectedColumnCount} mesas.`,
+    "Dentro de cada fila, el orden debe ser estrictamente de izquierda a derecha.",
+    "Las filas deben ir estrictamente de arriba a abajo.",
+    "Lee solo etiquetas internas M:x y S:x de cada mesa.",
+    "Ignora por completo texto global del plano como 42 MESAS, 12 PAX, 500 PAX, nombres del evento, logos, leyendas, DJ, barra, cotas o anotaciones tecnicas.",
+    "NO renumeres mesas, NO inventes sillas y NO uses valores globales para varias mesas.",
+    "Si dudas entre 5, 6, 7, 8, 9 o 10, prioriza el dibujo real de cada mesa y la coherencia del conjunto.",
+    typeof hints.expectedChairTotal === "number"
+      ? `La suma total de chairCount debe ser exactamente ${hints.expectedChairTotal}.`
+      : "",
+    "Devuelve solo JSON valido siguiendo exactamente el esquema.",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const hintsText = [
+    typeof hints.expectedTableCount === "number"
+      ? `Mesas esperadas: ${hints.expectedTableCount}.`
+      : "",
+    `Filas esperadas: ${hints.expectedRowCount}.`,
+    `Columnas esperadas: ${hints.expectedColumnCount}.`,
+    typeof hints.expectedChairTotal === "number"
+      ? `Sillas totales esperadas: ${hints.expectedChairTotal}.`
+      : "",
+    hints.learningContext
+      ? `Contexto validado SOLO orientativo, nunca vinculante:\n${hints.learningContext}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  let response: Response;
+  try {
+    response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      signal: getImportAbortSignal(debugContext),
+      body: JSON.stringify({
+        model: OPENAI_IMPORT_MODEL,
+        max_output_tokens: 4000,
+        input: [
+          {
+            role: "developer",
+            content: [{ type: "input_text", text: instructions }],
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: `Analiza esta imagen (${sourceLabel}) y devuelve una matriz exacta de mesas por filas visuales reales. ${hintsText} ${reviewContext ?? ""}`.trim(),
+              },
+              ...inputItems,
+            ],
+          },
+        ],
+        text: {
+          format: {
+            type: "json_schema",
+            name: "seating_plan_grid_labels",
+            strict: true,
+            schema,
+          },
+        },
+      }),
+    });
+  } catch (error) {
+    if (isAbortLikeError(error)) {
+      throw new PlanImportCancelledError();
+    }
+
+    throw error;
+  }
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "");
+    logPlanImport(debugContext, "openai.grid_labels.failed", {
+      sourceLabel,
+      status: response.status,
+      errorText,
+    });
+    throw new Error(`OpenAI grid labels failed (${response.status}): ${errorText}`);
+  }
+
+  const responseJson = (await response.json()) as Record<string, unknown>;
+  const rawOutput = extractResponseOutputText(responseJson);
+  const parsed = parseJsonSafe<AiGridPlanPayload>(rawOutput);
+  const seen = new Set<number>();
+  const rows = Array.isArray(parsed?.rows)
+    ? parsed.rows.map((row) => ({
+        tables: Array.isArray(row?.tables)
+          ? row.tables
+              .filter(
+                (table): table is AiOrderedPlanTable =>
+                  Number.isInteger(table?.numero) &&
+                  (table?.numero ?? 0) > 0 &&
+                  Number.isInteger(table?.chairCount) &&
+                  (table?.chairCount ?? 0) >= 2 &&
+                  (table?.chairCount ?? 0) <= 16,
+              )
+              .map((table) => ({
+                numero: table.numero,
+                chairCount: table.chairCount,
+              }))
+              .filter((table) => {
+                if (seen.has(table.numero)) {
+                  return false;
+                }
+
+                seen.add(table.numero);
+                return true;
+              })
+          : [],
+      }))
+    : [];
+
+  logPlanImport(debugContext, "openai.grid_labels.completed", {
+    sourceLabel,
+    outputLength: rawOutput.length,
+    rowCount: rows.length,
+    tableCount: rows.reduce((sum, row) => sum + row.tables.length, 0),
+  });
+
+  return rows;
+}
+
 async function importPlanWithOpenAIFromImage(
   buffer: Buffer,
   mimeType: string,
@@ -4578,6 +4894,365 @@ async function importPlanWithOpenAIFromImage(
           }
         : null,
   };
+}
+
+function flattenGridRowsWithSyntheticPositions(
+  rows: Array<{ tables: AiOrderedPlanTable[] }>,
+  hints: {
+    expectedRowCount: number;
+    expectedColumnCount: number;
+  },
+) {
+  const entries: MesaSillaPair[] = [];
+
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+    for (let columnIndex = 0; columnIndex < rows[rowIndex].tables.length; columnIndex += 1) {
+      const table = rows[rowIndex].tables[columnIndex];
+      entries.push({
+        numero: table.numero,
+        chairCount: table.chairCount,
+        x: (columnIndex + 1) * SYNTHETIC_GRID_SPACING,
+        y: (rowIndex + 1) * SYNTHETIC_GRID_SPACING,
+      });
+    }
+  }
+
+  if (entries.length !== hints.expectedRowCount * hints.expectedColumnCount) {
+    return null;
+  }
+
+  return entries;
+}
+
+async function buildHintGridRowBands(
+  buffer: Buffer,
+  hints: {
+    expectedRowCount: number;
+  },
+) {
+  const metadata = await sharp(buffer).metadata();
+  const width = metadata.width ?? 0;
+  const height = metadata.height ?? 0;
+
+  if (width <= 0 || height <= 0) {
+    return [] as Buffer[];
+  }
+
+  const horizontalInset = Math.round(width * 0.05);
+  const verticalInset = Math.round(height * 0.04);
+  const usableX = horizontalInset;
+  const usableY = verticalInset;
+  const usableWidth = Math.max(1, width - horizontalInset * 2);
+  const usableHeight = Math.max(1, height - verticalInset * 2);
+  const rowHeight = usableHeight / hints.expectedRowCount;
+  const overlap = Math.max(18, Math.round(rowHeight * 0.14));
+  const bands: Buffer[] = [];
+
+  for (let rowIndex = 0; rowIndex < hints.expectedRowCount; rowIndex += 1) {
+    const top = Math.max(0, Math.round(usableY + rowHeight * rowIndex - overlap));
+    const bottom = Math.min(
+      height,
+      Math.round(usableY + rowHeight * (rowIndex + 1) + overlap),
+    );
+    const region = clampCropRegion(
+      {
+        x: usableX,
+        y: top,
+        width: usableWidth,
+        height: Math.max(1, bottom - top),
+      },
+      width,
+      height,
+    );
+    bands.push(await cropBufferToRegion(buffer, region));
+  }
+
+  return bands;
+}
+
+async function buildHintGridCellCrops(
+  buffer: Buffer,
+  hints: {
+    expectedRowCount: number;
+    expectedColumnCount: number;
+  },
+) {
+  const metadata = await sharp(buffer).metadata();
+  const width = metadata.width ?? 0;
+  const height = metadata.height ?? 0;
+
+  if (width <= 0 || height <= 0) {
+    return [] as Array<{ rowIndex: number; columnIndex: number; buffer: Buffer }>;
+  }
+
+  const horizontalInset = Math.round(width * 0.05);
+  const verticalInset = Math.round(height * 0.04);
+  const usableX = horizontalInset;
+  const usableY = verticalInset;
+  const usableWidth = Math.max(1, width - horizontalInset * 2);
+  const usableHeight = Math.max(1, height - verticalInset * 2);
+  const cellWidth = usableWidth / hints.expectedColumnCount;
+  const cellHeight = usableHeight / hints.expectedRowCount;
+  const xOverlap = Math.max(16, Math.round(cellWidth * 0.18));
+  const yOverlap = Math.max(16, Math.round(cellHeight * 0.18));
+  const crops: Array<{ rowIndex: number; columnIndex: number; buffer: Buffer }> = [];
+
+  for (let rowIndex = 0; rowIndex < hints.expectedRowCount; rowIndex += 1) {
+    for (let columnIndex = 0; columnIndex < hints.expectedColumnCount; columnIndex += 1) {
+      const left = Math.max(0, Math.round(usableX + cellWidth * columnIndex - xOverlap));
+      const top = Math.max(0, Math.round(usableY + cellHeight * rowIndex - yOverlap));
+      const right = Math.min(
+        width,
+        Math.round(usableX + cellWidth * (columnIndex + 1) + xOverlap),
+      );
+      const bottom = Math.min(
+        height,
+        Math.round(usableY + cellHeight * (rowIndex + 1) + yOverlap),
+      );
+      const region = clampCropRegion(
+        {
+          x: left,
+          y: top,
+          width: Math.max(1, right - left),
+          height: Math.max(1, bottom - top),
+        },
+        width,
+        height,
+      );
+
+      crops.push({
+        rowIndex,
+        columnIndex,
+        buffer: await cropBufferToRegion(buffer, region),
+      });
+    }
+  }
+
+  return crops;
+}
+
+async function readOpenAIGridLabelsFromImage({
+  buffer,
+  mimeType,
+  hints,
+  sourceLabel,
+  debugContext,
+}: {
+  buffer: Buffer;
+  mimeType: string;
+  hints: PlanImportHints & {
+    expectedTableCount: number;
+    expectedRowCount: number;
+    expectedColumnCount: number;
+  };
+  sourceLabel: string;
+  debugContext?: PlanImportDebugContext;
+}) {
+  const prepared = await bufferToPngDataUrl(buffer, mimeType || "image/png");
+  const thresholdBuffer = await sharp(buffer)
+    .greyscale()
+    .normalize()
+    .modulate({ brightness: 1.04 })
+    .threshold(176)
+    .png()
+    .toBuffer();
+  const thresholdImage = await bufferToPngDataUrl(thresholdBuffer, "image/png");
+  const candidates: MesaSillaPair[][] = [];
+
+  const baseRows = await callOpenAIGridLabelReader({
+    sourceLabel,
+    hints,
+    debugContext,
+    inputItems: [
+      {
+        type: "input_image" as const,
+        image_url: prepared.dataUrl,
+        detail: "high" as const,
+      },
+      {
+        type: "input_image" as const,
+        image_url: thresholdImage.dataUrl,
+        detail: "high" as const,
+      },
+    ],
+  }).catch((error) => {
+    logPlanImport(debugContext, "image.openai_only.grid_failed", serializeImportError(error));
+    return null;
+  });
+
+  const baseEntries = baseRows ? flattenGridRowsWithSyntheticPositions(baseRows, hints) : null;
+  if (baseEntries) {
+    candidates.push(baseEntries);
+  }
+
+  const rowBands = await buildHintGridRowBands(buffer, hints);
+  if (rowBands.length === hints.expectedRowCount) {
+    const rowEntries: MesaSillaPair[] = [];
+    let allRowsComplete = true;
+
+    for (let rowIndex = 0; rowIndex < rowBands.length; rowIndex += 1) {
+      const rowImage = await bufferToPngDataUrl(rowBands[rowIndex], "image/png");
+      const thresholdRowImage = await bufferToPngDataUrl(
+        await sharp(rowBands[rowIndex]).greyscale().normalize().threshold(176).png().toBuffer(),
+        "image/png",
+      );
+      const rowResult = await callOpenAIOrderedLabelReader({
+        sourceLabel: `${sourceLabel}-grid-row-${rowIndex + 1}`,
+        hints: {
+          expectedTableCount: hints.expectedColumnCount,
+        },
+        forceExactHints: true,
+        reviewContext: baseEntries
+          ? `La lectura global en matriz fue:\n${serializeOrderedLabels(baseEntries)}\nCorrige solo esta fila si ves algo distinto con claridad.`
+          : undefined,
+        debugContext,
+        inputItems: [
+          {
+            type: "input_text" as const,
+            text: `Este recorte contiene una sola fila del plano. Devuelve exactamente ${hints.expectedColumnCount} mesas de izquierda a derecha.`,
+          },
+          {
+            type: "input_image" as const,
+            image_url: rowImage.dataUrl,
+            detail: "high" as const,
+          },
+          {
+            type: "input_image" as const,
+            image_url: thresholdRowImage.dataUrl,
+            detail: "high" as const,
+          },
+        ],
+      }).catch((error) => {
+        logPlanImport(debugContext, "image.openai_only.grid_row_failed", {
+          rowIndex,
+          ...serializeImportError(error),
+        });
+        return null;
+      });
+
+      if (!rowResult || rowResult.length !== hints.expectedColumnCount) {
+        allRowsComplete = false;
+        break;
+      }
+
+      rowEntries.push(
+        ...rowResult.map((table, columnIndex) => ({
+          numero: table.numero,
+          chairCount: table.chairCount,
+          x: (columnIndex + 1) * SYNTHETIC_GRID_SPACING,
+          y: (rowIndex + 1) * SYNTHETIC_GRID_SPACING,
+        })),
+      );
+    }
+
+    if (allRowsComplete && rowEntries.length === hints.expectedTableCount) {
+      logPlanImport(debugContext, "image.openai_only.grid_row_completed", {
+        rowCount: hints.expectedRowCount,
+        tableCount: rowEntries.length,
+        chairTotal: getChairTotal(rowEntries),
+      });
+      candidates.push(rowEntries);
+    }
+  }
+
+  const bestAfterRows =
+    [...candidates].sort(
+      (a, b) =>
+        scoreOrderedLabelCandidate(a, hints, hints.expectedTableCount) -
+        scoreOrderedLabelCandidate(b, hints, hints.expectedTableCount),
+    )[0] ?? null;
+
+  if (
+    bestAfterRows &&
+    typeof hints.expectedChairTotal === "number" &&
+    getChairTotal(bestAfterRows) === hints.expectedChairTotal &&
+    bestAfterRows.length === hints.expectedTableCount
+  ) {
+    return bestAfterRows;
+  }
+
+  const cellCrops = await buildHintGridCellCrops(buffer, hints);
+  if (cellCrops.length === hints.expectedTableCount) {
+    const cellEntries: MesaSillaPair[] = [];
+    let allCellsComplete = true;
+
+    for (const cell of cellCrops) {
+      const cellImage = await bufferToPngDataUrl(cell.buffer, "image/png");
+      const thresholdCellImage = await bufferToPngDataUrl(
+        await sharp(cell.buffer).greyscale().normalize().threshold(176).png().toBuffer(),
+        "image/png",
+      );
+      const previousGuess =
+        bestAfterRows?.find(
+          (entry) =>
+            entry.x === (cell.columnIndex + 1) * SYNTHETIC_GRID_SPACING &&
+            entry.y === (cell.rowIndex + 1) * SYNTHETIC_GRID_SPACING,
+        ) ??
+        null;
+      const cellResult = await callOpenAIOrderedLabelReader({
+        sourceLabel: `${sourceLabel}-grid-cell-${cell.rowIndex + 1}-${cell.columnIndex + 1}`,
+        hints: {
+          expectedTableCount: 1,
+        },
+        forceExactHints: true,
+        reviewContext: previousGuess
+          ? `La lectura actual para esta celda es M:${previousGuess.numero} S:${previousGuess.chairCount}. Corrigela solo si ves claramente otra lectura mejor en este recorte.`
+          : undefined,
+        debugContext,
+        inputItems: [
+          {
+            type: "input_text" as const,
+            text: "Este recorte contiene una sola mesa. Devuelve exactamente una mesa con su M:x y S:x.",
+          },
+          {
+            type: "input_image" as const,
+            image_url: cellImage.dataUrl,
+            detail: "high" as const,
+          },
+          {
+            type: "input_image" as const,
+            image_url: thresholdCellImage.dataUrl,
+            detail: "high" as const,
+          },
+        ],
+      }).catch((error) => {
+        logPlanImport(debugContext, "image.openai_only.grid_cell_failed", {
+          rowIndex: cell.rowIndex,
+          columnIndex: cell.columnIndex,
+          ...serializeImportError(error),
+        });
+        return null;
+      });
+
+      if (!cellResult || cellResult.length !== 1) {
+        allCellsComplete = false;
+        break;
+      }
+
+      cellEntries.push({
+        numero: cellResult[0].numero,
+        chairCount: cellResult[0].chairCount,
+        x: (cell.columnIndex + 1) * SYNTHETIC_GRID_SPACING,
+        y: (cell.rowIndex + 1) * SYNTHETIC_GRID_SPACING,
+      });
+    }
+
+    if (allCellsComplete && cellEntries.length === hints.expectedTableCount) {
+      logPlanImport(debugContext, "image.openai_only.grid_cell_completed", {
+        tableCount: cellEntries.length,
+        chairTotal: getChairTotal(cellEntries),
+      });
+      candidates.push(cellEntries);
+    }
+  }
+
+  return (
+    [...candidates].sort(
+      (a, b) =>
+        scoreOrderedLabelCandidate(a, hints, hints.expectedTableCount) -
+        scoreOrderedLabelCandidate(b, hints, hints.expectedTableCount),
+    )[0] ?? null
+  );
 }
 
 function parseSvgFile(text: string) {
@@ -5553,6 +6228,557 @@ async function runImageOcr(buffer: Buffer, widthHint?: number, heightHint?: numb
     : [];
 }
 
+async function readOpenAIOrderedLabelsForDetectedLayout({
+  buffer,
+  mimeType,
+  layout,
+  hints,
+  sourceLabel,
+  debugContext,
+}: {
+  buffer: Buffer;
+  mimeType: string;
+  layout: DetectedImageLayout;
+  hints?: PlanImportHints;
+  sourceLabel: string;
+  debugContext?: PlanImportDebugContext;
+}) {
+  const focusBounds = getGeometryBounds(layout.tables);
+  const focusBuffer =
+    focusBounds &&
+    layout.sourceBounds.width > 0 &&
+    layout.sourceBounds.height > 0
+      ? await cropBufferToRegion(
+          buffer,
+          clampCropRegion(
+            {
+              x: focusBounds.minX,
+              y: focusBounds.minY,
+              width: focusBounds.maxX - focusBounds.minX,
+              height: focusBounds.maxY - focusBounds.minY,
+            },
+            layout.sourceBounds.width,
+            layout.sourceBounds.height,
+          ),
+        )
+      : buffer;
+  const focusImage = await bufferToPngDataUrl(focusBuffer, mimeType || "image/png");
+  const contactSheet = await buildGeometryContactSheet(buffer, layout, "original");
+  const thresholdSheet = await buildGeometryContactSheet(buffer, layout, "threshold");
+  const contactSheetImage = contactSheet
+    ? await bufferToPngDataUrl(contactSheet.buffer, "image/png")
+    : null;
+  const thresholdSheetImage = thresholdSheet
+    ? await bufferToPngDataUrl(thresholdSheet.buffer, "image/png")
+    : null;
+
+  let orderedLabels = await callOpenAIOrderedLabelReader({
+    sourceLabel,
+    hints,
+    debugContext,
+    inputItems: [
+      ...(contactSheetImage
+        ? [
+            {
+              type: "input_text" as const,
+              text: "La primera imagen es un mosaico ordenado de recortes individuales de mesas con etiqueta Pos N. Usa ese mosaico como fuente principal para leer M:x y S:x. Si aparece una segunda imagen, es el mismo mosaico en alto contraste para distinguir mejor 5, 6, 7, 8, 9 y 10.",
+            },
+            {
+              type: "input_image" as const,
+              image_url: contactSheetImage.dataUrl,
+              detail: "high" as const,
+            },
+            ...(thresholdSheetImage
+              ? [
+                  {
+                    type: "input_image" as const,
+                    image_url: thresholdSheetImage.dataUrl,
+                    detail: "high" as const,
+                  },
+                ]
+              : []),
+          ]
+        : []),
+      {
+        type: "input_image" as const,
+        image_url: focusImage.dataUrl,
+        detail: "high" as const,
+      },
+    ],
+  }).catch((error) => {
+    logPlanImport(debugContext, "image.openai_only.ordered_labels_failed", serializeImportError(error));
+    return null;
+  });
+
+  const candidateLabelSets: AiOrderedPlanTable[][] = orderedLabels ? [orderedLabels] : [];
+  const expectedTableMismatch =
+    typeof hints?.expectedTableCount === "number" &&
+    orderedLabels &&
+    orderedLabels.length !== hints.expectedTableCount;
+  const expectedChairMismatch =
+    typeof hints?.expectedChairTotal === "number" &&
+    orderedLabels &&
+    getChairTotal(orderedLabels) !== hints.expectedChairTotal;
+
+  if (expectedTableMismatch || expectedChairMismatch) {
+    const retryOrderedLabels = await callOpenAIOrderedLabelReader({
+      sourceLabel: `${sourceLabel}-retry`,
+      hints,
+      forceExactHints: true,
+      reviewContext:
+        orderedLabels && orderedLabels.length > 0
+          ? `Tu lectura anterior fue esta:\n${serializeOrderedLabels(orderedLabels)}\nEsa lectura suma ${getChairTotal(orderedLabels)} sillas. Corrige solo las posiciones dudosas para cuadrar exactamente con las pistas esperadas, manteniendo el orden visual real.`
+          : undefined,
+      debugContext,
+      inputItems: [
+        ...(contactSheetImage
+          ? [
+              {
+                type: "input_text" as const,
+                text: "Corrige solo las posiciones dudosas y mantén estrictamente el orden Pos N del mosaico.",
+              },
+              {
+                type: "input_image" as const,
+                image_url: contactSheetImage.dataUrl,
+                detail: "high" as const,
+              },
+              ...(thresholdSheetImage
+                ? [
+                    {
+                      type: "input_image" as const,
+                      image_url: thresholdSheetImage.dataUrl,
+                      detail: "high" as const,
+                    },
+                  ]
+                : []),
+            ]
+          : []),
+        {
+          type: "input_image" as const,
+          image_url: focusImage.dataUrl,
+          detail: "high" as const,
+        },
+      ],
+    }).catch((error) => {
+      logPlanImport(debugContext, "image.openai_only.ordered_labels_retry_failed", serializeImportError(error));
+      return null;
+    });
+
+    if (retryOrderedLabels && retryOrderedLabels.length > 0) {
+      candidateLabelSets.push(retryOrderedLabels);
+    }
+
+    const finalOrderedLabels = await callOpenAIOrderedLabelReader({
+      sourceLabel: `${sourceLabel}-final`,
+      hints,
+      forceExactHints: true,
+      reviewContext:
+        candidateLabelSets.length > 0
+          ? `Tienes estas lecturas previas candidatas:\n\nCandidata 1:\n${serializeOrderedLabels(candidateLabelSets[0])}\nSuma=${getChairTotal(candidateLabelSets[0])}\n${
+              candidateLabelSets[1]
+                ? `\nCandidata 2:\n${serializeOrderedLabels(candidateLabelSets[1])}\nSuma=${getChairTotal(candidateLabelSets[1])}\n`
+                : ""
+            }\nDevuelve la mejor versión final que respete el orden visual y cuadre exactamente con las pistas esperadas.`
+          : undefined,
+      debugContext,
+      inputItems: [
+        ...(contactSheetImage
+          ? [
+              {
+                type: "input_text" as const,
+                text: "Prioriza el mosaico ordenado Pos N por encima del plano general para la lectura final.",
+              },
+              {
+                type: "input_image" as const,
+                image_url: contactSheetImage.dataUrl,
+                detail: "high" as const,
+              },
+              ...(thresholdSheetImage
+                ? [
+                    {
+                      type: "input_image" as const,
+                      image_url: thresholdSheetImage.dataUrl,
+                      detail: "high" as const,
+                    },
+                  ]
+                : []),
+            ]
+          : []),
+        {
+          type: "input_image" as const,
+          image_url: focusImage.dataUrl,
+          detail: "high" as const,
+        },
+      ],
+    }).catch((error) => {
+      logPlanImport(debugContext, "image.openai_only.ordered_labels_final_failed", serializeImportError(error));
+      return null;
+    });
+
+    if (finalOrderedLabels && finalOrderedLabels.length > 0) {
+      candidateLabelSets.push(finalOrderedLabels);
+    }
+
+    orderedLabels =
+      [...candidateLabelSets].sort(
+        (a, b) =>
+          scoreOrderedLabelCandidate(a, hints, layout.tables.length) -
+          scoreOrderedLabelCandidate(b, hints, layout.tables.length),
+      )[0] ?? orderedLabels;
+  }
+
+  const stillMismatchedAfterRetries =
+    orderedLabels &&
+    ((typeof hints?.expectedTableCount === "number" &&
+      orderedLabels.length !== hints.expectedTableCount) ||
+      (typeof hints?.expectedChairTotal === "number" &&
+        getChairTotal(orderedLabels) !== hints.expectedChairTotal));
+
+  if (stillMismatchedAfterRetries) {
+    const rowSheets = await buildGeometryRowContactSheets(buffer, layout, "original");
+    const thresholdRowSheets = await buildGeometryRowContactSheets(buffer, layout, "threshold");
+    const rowCandidates: AiOrderedPlanTable[] = [];
+    let allRowsComplete = true;
+
+    for (let rowIndex = 0; rowIndex < rowSheets.length; rowIndex += 1) {
+      const rowImage = await bufferToPngDataUrl(rowSheets[rowIndex].buffer, "image/png");
+      const thresholdRowImage =
+        thresholdRowSheets[rowIndex]
+          ? await bufferToPngDataUrl(thresholdRowSheets[rowIndex].buffer, "image/png")
+          : null;
+      const rowResult = await callOpenAIOrderedLabelReader({
+        sourceLabel: `${sourceLabel}-fila-${rowIndex + 1}`,
+        hints: {
+          expectedTableCount: rowSheets[rowIndex].count,
+        },
+        forceExactHints: true,
+        reviewContext:
+          orderedLabels && orderedLabels.length > 0
+            ? `La lectura global anterior fue esta:\n${serializeOrderedLabels(orderedLabels)}\nCorrige ahora solo esta fila manteniendo el orden Pos 1..Pos ${rowSheets[rowIndex].count}.`
+            : undefined,
+        debugContext,
+        inputItems: [
+          {
+            type: "input_text" as const,
+            text: `Devuelve exactamente ${rowSheets[rowIndex].count} mesas en el orden Pos 1..Pos ${rowSheets[rowIndex].count}.`,
+          },
+          {
+            type: "input_image" as const,
+            image_url: rowImage.dataUrl,
+            detail: "high" as const,
+          },
+          ...(thresholdRowImage
+            ? [
+                {
+                  type: "input_image" as const,
+                  image_url: thresholdRowImage.dataUrl,
+                  detail: "high" as const,
+                },
+              ]
+            : []),
+        ],
+      }).catch((error) => {
+        logPlanImport(debugContext, "image.openai_only.row_retry_failed", {
+          rowIndex,
+          ...serializeImportError(error),
+        });
+        return null;
+      });
+
+      if (!rowResult || rowResult.length !== rowSheets[rowIndex].count) {
+        allRowsComplete = false;
+        break;
+      }
+
+      rowCandidates.push(...rowResult);
+    }
+
+    if (allRowsComplete && rowCandidates.length === layout.tables.length) {
+      candidateLabelSets.push(rowCandidates);
+      orderedLabels =
+        [...candidateLabelSets].sort(
+          (a, b) =>
+            scoreOrderedLabelCandidate(a, hints, layout.tables.length) -
+            scoreOrderedLabelCandidate(b, hints, layout.tables.length),
+        )[0] ?? orderedLabels;
+
+      logPlanImport(debugContext, "image.openai_only.row_retry_completed", {
+        rowCount: rowSheets.length,
+        tableCount: rowCandidates.length,
+        chairTotal: getChairTotal(rowCandidates),
+      });
+    }
+  }
+
+  const stillMismatchedAfterRowRetries =
+    orderedLabels &&
+    typeof hints?.expectedChairTotal === "number" &&
+    getChairTotal(orderedLabels) !== hints.expectedChairTotal;
+
+  if (stillMismatchedAfterRowRetries) {
+    const orderedTables = sortEntriesBySpatialOrder(layout.tables).filter(
+      (entry): entry is MesaSillaPair & { x: number; y: number } =>
+        typeof entry.x === "number" && typeof entry.y === "number",
+    );
+    const halfWidth = clamp(Math.round(Math.max(95, layout.nearestDistance * 0.48)), 82, 130);
+    const halfHeight = clamp(Math.round(Math.max(78, layout.nearestDistance * 0.4)), 70, 118);
+    const tableCandidates: AiOrderedPlanTable[] = [];
+    let allTablesComplete = true;
+
+    for (let tableIndex = 0; tableIndex < orderedTables.length; tableIndex += 1) {
+      const table = orderedTables[tableIndex];
+      const cropRegion = clampCropRegion(
+        {
+          x: table.x - halfWidth,
+          y: table.y - halfHeight,
+          width: halfWidth * 2,
+          height: halfHeight * 2,
+        },
+        layout.sourceBounds.width,
+        layout.sourceBounds.height,
+      );
+      const cropBuffer = await cropBufferToRegion(buffer, cropRegion);
+      const cropImage = await bufferToPngDataUrl(cropBuffer, "image/png");
+      const thresholdCropBuffer = await sharp(cropBuffer)
+        .greyscale()
+        .normalize()
+        .modulate({ brightness: 1.06 })
+        .threshold(178)
+        .png()
+        .toBuffer();
+      const thresholdCropImage = await bufferToPngDataUrl(thresholdCropBuffer, "image/png");
+      const previousGuess = orderedLabels?.[tableIndex];
+
+      const singleResult = await callOpenAIOrderedLabelReader({
+        sourceLabel: `${sourceLabel}-mesa-${tableIndex + 1}`,
+        hints: {
+          expectedTableCount: 1,
+        },
+        forceExactHints: true,
+        reviewContext: previousGuess
+          ? `La lectura actual para esta posicion es M:${previousGuess.numero} S:${previousGuess.chairCount}. Corrigela solo si ves claramente otra lectura mejor en este recorte.`
+          : undefined,
+        debugContext,
+        inputItems: [
+          {
+            type: "input_text" as const,
+            text: "Devuelve exactamente una sola mesa leída dentro de este recorte, con su M:x y su S:x.",
+          },
+          {
+            type: "input_image" as const,
+            image_url: cropImage.dataUrl,
+            detail: "high" as const,
+          },
+          {
+            type: "input_image" as const,
+            image_url: thresholdCropImage.dataUrl,
+            detail: "high" as const,
+          },
+        ],
+      }).catch((error) => {
+        logPlanImport(debugContext, "image.openai_only.single_table_retry_failed", {
+          tableIndex,
+          ...serializeImportError(error),
+        });
+        return null;
+      });
+
+      if (!singleResult || singleResult.length !== 1) {
+        allTablesComplete = false;
+        break;
+      }
+
+      tableCandidates.push(singleResult[0]);
+    }
+
+    if (allTablesComplete && tableCandidates.length === orderedTables.length) {
+      candidateLabelSets.push(tableCandidates);
+      orderedLabels =
+        [...candidateLabelSets].sort(
+          (a, b) =>
+            scoreOrderedLabelCandidate(a, hints, layout.tables.length) -
+            scoreOrderedLabelCandidate(b, hints, layout.tables.length),
+        )[0] ?? orderedLabels;
+
+      logPlanImport(debugContext, "image.openai_only.single_table_retry_completed", {
+        tableCount: tableCandidates.length,
+        chairTotal: getChairTotal(tableCandidates),
+      });
+    }
+  }
+
+  return orderedLabels;
+}
+
+async function importPlanWithOpenAIOnlyFromImage(
+  bytes: Buffer,
+  mimeType: string,
+  existingTableCount: number,
+  hints?: PlanImportHints,
+  debugContext?: PlanImportDebugContext,
+) {
+  logPlanImport(debugContext, "image.openai_only.started", {
+    expectedTableCount: hints?.expectedTableCount ?? null,
+    expectedChairTotal: hints?.expectedChairTotal ?? null,
+  });
+
+  const geometricLayout = await withTimeout(
+    (signal) => detectTableLayoutFromImageGeometry(bytes, debugContext, signal),
+    IMAGE_GEOMETRY_TIMEOUT_MS,
+    "image geometry detection",
+    { signal: getImportAbortSignal(debugContext) },
+  ).catch((error) => {
+    logPlanImport(debugContext, "image.openai_only.geometry_failed", serializeImportError(error));
+    return null;
+  });
+  assertImportNotCancelled(debugContext);
+
+  if (geometricLayout && geometricLayout.tables.length >= 12) {
+    const orderedGeometryLabels = await readOpenAIOrderedLabelsForDetectedLayout({
+      buffer: bytes,
+      mimeType,
+      layout: geometricLayout,
+      hints,
+      sourceLabel: "imagen-openai-only-geometria",
+      debugContext,
+    });
+
+    if (
+      orderedGeometryLabels &&
+      orderedGeometryLabels.length >= Math.max(24, Math.floor(geometricLayout.tables.length * 0.7))
+    ) {
+      const mergedGeometryLabels = mergeGeometryWithOrderedLabels(
+        geometricLayout.tables,
+        orderedGeometryLabels,
+      );
+
+      logPlanImport(debugContext, "file.branch.image.completed", {
+        strategy: "openai_only_geometry_ordered",
+        geometryEntryCount: geometricLayout.tables.length,
+        orderedLabelCount: orderedGeometryLabels.length,
+      });
+
+      return entriesToImportedTables(
+        applyHintGridLayout(mergedGeometryLabels, hints),
+        existingTableCount,
+        hints?.expectedRowCount && hints?.expectedColumnCount
+          ? undefined
+          : geometricLayout.sourceBounds,
+      );
+    }
+  }
+
+  if (
+    typeof hints?.expectedTableCount === "number" &&
+    typeof hints.expectedRowCount === "number" &&
+    typeof hints.expectedColumnCount === "number" &&
+    hints.expectedRowCount > 0 &&
+    hints.expectedColumnCount > 0
+  ) {
+    const gridLabels = await readOpenAIGridLabelsFromImage({
+      buffer: bytes,
+      mimeType,
+      hints: {
+        ...hints,
+        expectedTableCount: hints.expectedTableCount,
+        expectedRowCount: hints.expectedRowCount,
+        expectedColumnCount: hints.expectedColumnCount,
+      },
+      sourceLabel: "imagen-openai-only-grid",
+      debugContext,
+    });
+
+    if (
+      gridLabels &&
+      gridLabels.length >= Math.max(12, Math.floor(hints.expectedTableCount * 0.8))
+    ) {
+      logPlanImport(debugContext, "file.branch.image.completed", {
+        strategy: "openai_only_grid",
+        gridEntryCount: gridLabels.length,
+      });
+
+      return entriesToImportedTables(
+        applyHintGridLayout(gridLabels, hints),
+        existingTableCount,
+        undefined,
+      );
+    }
+  }
+
+  const aiResult = await importPlanWithOpenAIFromImage(bytes, mimeType, debugContext).catch((error) => {
+    logPlanImport(debugContext, "image.openai_only.global_failed", serializeImportError(error));
+    return null;
+  });
+  assertImportNotCancelled(debugContext);
+
+  if (aiResult?.tables.length) {
+    const aiDetectedLayout = buildDetectedLayoutFromEntries(aiResult.tables, aiResult.sourceBounds);
+    if (aiDetectedLayout) {
+      const orderedAiLabels = await readOpenAIOrderedLabelsForDetectedLayout({
+        buffer: bytes,
+        mimeType,
+        layout: aiDetectedLayout,
+        hints,
+        sourceLabel: "imagen-openai-only-ai-layout",
+        debugContext,
+      });
+
+      if (
+        orderedAiLabels &&
+        orderedAiLabels.length >= Math.max(12, Math.floor(aiResult.tables.length * 0.7))
+      ) {
+        const mergedAiTables = mergeAiLayoutWithOrderedLabels(
+          aiResult.tables,
+          orderedAiLabels,
+        );
+
+        logPlanImport(debugContext, "file.branch.image.completed", {
+          strategy: "openai_only_ai_layout_ordered",
+          aiEntryCount: aiResult.tables.length,
+          orderedLabelCount: orderedAiLabels.length,
+        });
+
+        return entriesToImportedTables(
+          applyHintGridLayout(mergedAiTables, hints),
+          existingTableCount,
+          hints?.expectedRowCount && hints?.expectedColumnCount
+            ? undefined
+            : aiResult.sourceBounds
+            ? {
+                ...aiResult.sourceBounds,
+                preferRegularized: true,
+              }
+            : undefined,
+        );
+      }
+    }
+
+    logPlanImport(debugContext, "file.branch.image.completed", {
+      strategy: "openai_only_global",
+      aiEntryCount: aiResult.tables.length,
+    });
+
+    return entriesToImportedTables(
+      applyHintGridLayout(aiResult.tables, hints),
+      existingTableCount,
+      hints?.expectedRowCount && hints?.expectedColumnCount
+        ? undefined
+        : aiResult.sourceBounds
+        ? {
+            ...aiResult.sourceBounds,
+            preferRegularized: true,
+          }
+        : undefined,
+    );
+  }
+
+  logPlanImport(debugContext, "file.branch.image.completed", {
+    strategy: "openai_only_empty",
+    entryCount: 0,
+  });
+  return [] as ImportedPlanTable[];
+}
+
 export async function importTablesFromPlanFile(
   file: File,
   existingTableCount: number,
@@ -5581,6 +6807,16 @@ export async function importTablesFromPlanFile(
   }
 
   logPlanImport(debugContext, "file.branch.image");
+  if (canUseOpenAIImporter()) {
+    return importPlanWithOpenAIOnlyFromImage(
+      bytes,
+      mimeType,
+      existingTableCount,
+      hints,
+      debugContext,
+    );
+  }
+
   logPlanImport(debugContext, "image.geometry.attempt");
   const geometricLayout = await withTimeout(
     (signal) => detectTableLayoutFromImageGeometry(bytes, debugContext, signal),

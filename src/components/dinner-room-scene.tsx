@@ -1,9 +1,9 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { ReactNode, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
 import { ContactShadows, OrbitControls, PerspectiveCamera, Text } from "@react-three/drei";
-import { MOUSE } from "three";
+import { MOUSE, TOUCH } from "three";
 
 import DinnerRoomHall3D from "@/components/dinner-room-hall-3d";
 import DinnerRoomPlan2D from "@/components/dinner-room-plan-2d";
@@ -24,6 +24,11 @@ type DinnerRoomSceneProps = {
   currentAsistenteId: string;
   selectionLocked: boolean;
   onSelectSilla: (sillaId: string | null) => void;
+  overlay?: ReactNode;
+  touchMode?: boolean;
+  defaultViewMode?: ViewMode;
+  fullscreenBehavior?: "available" | "locked" | "hidden";
+  requestFullscreenOnMount?: boolean;
 };
 
 type ViewMode = "3d" | "2d";
@@ -205,6 +210,8 @@ function SceneContent(props: DinnerRoomSceneProps) {
         enableZoom
         makeDefault
         dampingFactor={0.08}
+        rotateSpeed={props.touchMode ? 0.72 : 1}
+        panSpeed={props.touchMode ? 0.7 : 1}
         minDistance={8}
         maxDistance={52}
         minPolarAngle={0.22}
@@ -214,6 +221,10 @@ function SceneContent(props: DinnerRoomSceneProps) {
           LEFT: MOUSE.ROTATE,
           MIDDLE: MOUSE.DOLLY,
           RIGHT: MOUSE.PAN,
+        }}
+        touches={{
+          ONE: TOUCH.ROTATE,
+          TWO: TOUCH.DOLLY_PAN,
         }}
         onChange={clampControlsToHall}
       />
@@ -263,7 +274,7 @@ function SceneContent(props: DinnerRoomSceneProps) {
 export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState(520);
-  const [viewMode, setViewMode] = useState<ViewMode>("2d");
+  const [viewMode, setViewMode] = useState<ViewMode>(props.defaultViewMode ?? "2d");
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [webglSupported, setWebglSupported] = useState<boolean | null>(null);
 
@@ -302,6 +313,22 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
       setViewMode("2d");
     }
   }, [webglSupported]);
+
+  useEffect(() => {
+    setViewMode(props.defaultViewMode ?? "2d");
+  }, [props.defaultViewMode, props.evento.id]);
+
+  useEffect(() => {
+    if (!props.requestFullscreenOnMount || !containerRef.current) {
+      return;
+    }
+
+    if (document.fullscreenElement === containerRef.current) {
+      return;
+    }
+
+    void containerRef.current.requestFullscreen().catch(() => undefined);
+  }, [props.requestFullscreenOnMount, props.evento.id]);
 
   async function toggleFullscreen() {
     if (!containerRef.current) {
@@ -357,20 +384,44 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
           </p>
           <p className="mt-1 text-xs leading-5 text-stone-600">
             {show3D
-              ? "Arrastra con el boton izquierdo para girar, con el derecho para mover la camara y usa la rueda para acercar o alejar."
-              : "Usa la rueda del raton para hacer zoom y arrastra para desplazarte por el plano."}
+              ? props.touchMode
+                ? "Arrastra con un dedo para girar la sala. Usa dos dedos para mover y acercar la camara."
+                : "Arrastra con el boton izquierdo para girar, con el derecho para mover la camara y usa la rueda para acercar o alejar."
+              : props.touchMode
+                ? "Arrastra para mover el plano y usa los controles grandes para acercar, alejar o centrar."
+                : "Usa la rueda del raton para hacer zoom y arrastra para desplazarte por el plano."}
           </p>
         </div>
 
-        <div className="pointer-events-auto absolute bottom-4 right-4">
-          <button
-            type="button"
-            onClick={toggleFullscreen}
-            className="rounded-full border border-stone-300 bg-white/90 px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-stone-700 shadow-sm backdrop-blur transition hover:border-stone-950 hover:text-stone-950"
-          >
-            {isFullscreen ? "Salir de pantalla completa" : "Pantalla completa"}
-          </button>
-        </div>
+        {props.fullscreenBehavior === "available" ? (
+          <div className="pointer-events-auto absolute bottom-4 right-4">
+            <button
+              type="button"
+              onClick={toggleFullscreen}
+              className="rounded-full border border-stone-300 bg-white/90 px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-stone-700 shadow-sm backdrop-blur transition hover:border-stone-950 hover:text-stone-950"
+            >
+              {isFullscreen ? "Salir de pantalla completa" : "Pantalla completa"}
+            </button>
+          </div>
+        ) : null}
+
+        {props.fullscreenBehavior === "locked" && !isFullscreen ? (
+          <div className="pointer-events-auto absolute bottom-4 right-4">
+            <button
+              type="button"
+              onClick={toggleFullscreen}
+              className="rounded-full bg-emerald-600 px-5 py-3 text-xs font-semibold uppercase tracking-[0.18em] text-white shadow-sm transition hover:bg-emerald-700"
+            >
+              Activar pantalla completa
+            </button>
+          </div>
+        ) : null}
+
+        {props.overlay ? (
+          <div className="pointer-events-none absolute inset-0 z-20">
+            {props.overlay}
+          </div>
+        ) : null}
       </div>
 
       {webglSupported === null ? (
@@ -387,6 +438,7 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
         <DinnerRoomPlan2D
           {...props}
           showCompatibilityMessage={webglSupported === false}
+          touchMode={props.touchMode}
         />
       )}
     </div>

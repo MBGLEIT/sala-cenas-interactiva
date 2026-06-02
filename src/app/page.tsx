@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
 import ToastStack, { ToastItem } from "@/components/toast-stack";
 import {
@@ -12,8 +12,8 @@ import {
   EventoSala,
   RealtimeReservaPayload,
   applyOptimisticReservation,
-  findSelectedChairDetails,
   findReservaActual,
+  findSelectedChairDetails,
   normalizeEventoSala,
 } from "@/lib/dinner-room";
 import { supabase } from "@/lib/supabase";
@@ -30,6 +30,19 @@ const DinnerRoomScene = dynamic(
   },
 );
 
+type AccessMode = "presencial" | "movil" | null;
+type PublicScreen =
+  | "home"
+  | "movil-identify"
+  | "presencial-wait"
+  | "presencial-manual"
+  | "room";
+
+type IdentityCandidate = {
+  asistente: AsistenteEncontrado;
+  evento: EventoSala;
+};
+
 async function fetchEventoSala(eventoId: string): Promise<EventoSala> {
   const { data, error } = await supabase
     .from("eventos")
@@ -45,46 +58,260 @@ async function fetchEventoSala(eventoId: string): Promise<EventoSala> {
     throw new Error("No existe un evento con ese id.");
   }
 
-  const evento = data as unknown as EventoQueryResult;
-  return normalizeEventoSala(evento);
+  return normalizeEventoSala(data as unknown as EventoQueryResult);
 }
 
-function LegendPill({
-  colorClassName,
+function StatBadge({
+  label,
+  value,
+  tone = "neutral",
+}: {
+  label: string;
+  value: string;
+  tone?: "neutral" | "success" | "warning";
+}) {
+  const toneClassName =
+    tone === "success"
+      ? "bg-emerald-100 text-emerald-700"
+      : tone === "warning"
+        ? "bg-amber-100 text-amber-700"
+        : "bg-stone-200 text-stone-700";
+
+  return (
+    <span
+      className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] ${toneClassName}`}
+    >
+      {label}: {value}
+    </span>
+  );
+}
+
+function ScreenCard({
+  eyebrow,
   title,
   description,
+  children,
 }: {
-  colorClassName: string;
+  eyebrow: string;
   title: string;
   description: string;
+  children: ReactNode;
 }) {
   return (
-    <div className="flex items-start gap-3 rounded-2xl border border-stone-200 bg-white px-4 py-4">
-      <span className={`mt-1 h-4 w-4 rounded-full ${colorClassName}`} />
-      <div>
-        <p className="text-sm font-semibold text-stone-900">{title}</p>
-        <p className="mt-1 text-sm leading-6 text-stone-600">{description}</p>
+    <div className="mx-auto max-w-3xl rounded-[36px] border border-stone-200 bg-white px-8 py-10 shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-10">
+      <p className="text-sm font-semibold uppercase tracking-[0.35em] text-amber-700">
+        {eyebrow}
+      </p>
+      <h1 className="mt-5 text-4xl font-semibold tracking-tight text-stone-950">
+        {title}
+      </h1>
+      <p className="mt-5 text-lg leading-8 text-stone-600">{description}</p>
+      <div className="mt-10">{children}</div>
+    </div>
+  );
+}
+
+function ModeButton({
+  title,
+  description,
+  onClick,
+}: {
+  title: string;
+  description: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="group rounded-[32px] border border-stone-200 bg-white px-8 py-8 text-left shadow-[0_20px_50px_rgba(28,25,23,0.08)] transition hover:-translate-y-0.5 hover:border-stone-950 hover:shadow-[0_26px_60px_rgba(28,25,23,0.14)]"
+    >
+      <p className="text-2xl font-semibold tracking-tight text-stone-950 transition group-hover:text-amber-700">
+        {title}
+      </p>
+      <p className="mt-3 text-base leading-7 text-stone-600">{description}</p>
+    </button>
+  );
+}
+
+function IdentityCodeForm({
+  identificador,
+  onChange,
+  onSubmit,
+  submitLabel,
+  busy,
+}: {
+  identificador: string;
+  onChange: (value: string) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  submitLabel: string;
+  busy: boolean;
+}) {
+  return (
+    <form className="space-y-4" onSubmit={onSubmit}>
+      <label
+        htmlFor="identificador"
+        className="block text-sm font-semibold uppercase tracking-[0.2em] text-stone-500"
+      >
+        Identificador del asistente
+      </label>
+      <input
+        id="identificador"
+        name="identificador"
+        type="text"
+        value={identificador}
+        onChange={(event) => onChange(event.target.value.toUpperCase())}
+        placeholder="Pon aqui tu codigo de asistente"
+        className="w-full rounded-3xl border border-stone-300 bg-stone-50 px-5 py-5 text-xl font-medium uppercase tracking-[0.15em] text-stone-900 outline-none transition focus:border-amber-500 focus:bg-white"
+      />
+      <button
+        type="submit"
+        disabled={busy}
+        className="inline-flex min-h-14 min-w-[220px] items-center justify-center rounded-full bg-stone-950 px-6 py-4 text-sm font-semibold uppercase tracking-[0.2em] text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-stone-400"
+      >
+        {busy ? "Identificando..." : submitLabel}
+      </button>
+    </form>
+  );
+}
+
+function InlineMessage({
+  tone,
+  title,
+  message,
+}: {
+  tone: "error" | "success" | "info";
+  title: string;
+  message: string;
+}) {
+  const className =
+    tone === "error"
+      ? "border-rose-200 bg-rose-50 text-rose-700"
+      : tone === "success"
+        ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+        : "border-amber-200 bg-amber-50 text-amber-800";
+
+  return (
+    <div className={`rounded-3xl border px-5 py-4 ${className}`}>
+      <p className="text-sm font-semibold uppercase tracking-[0.2em]">{title}</p>
+      <p className="mt-2 text-base leading-7">{message}</p>
+    </div>
+  );
+}
+
+function OverlayModal({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="pointer-events-auto absolute inset-0 flex items-center justify-center bg-stone-950/45 px-4 py-6 backdrop-blur-sm">
+      <div className="w-full max-w-2xl rounded-[32px] border border-stone-200 bg-white p-6 shadow-[0_24px_80px_rgba(28,25,23,0.22)] sm:p-8">
+        <h3 className="text-3xl font-semibold tracking-tight text-stone-950">{title}</h3>
+        {description ? (
+          <p className="mt-3 text-base leading-7 text-stone-600">{description}</p>
+        ) : null}
+        <div className="mt-6">{children}</div>
       </div>
     </div>
   );
 }
 
+function ReservationChecklist({
+  esCeliaco,
+  setEsCeliaco,
+  tieneAlergias,
+  setTieneAlergias,
+  movilidadReducida,
+  setMovilidadReducida,
+  observacionesReserva,
+  setObservacionesReserva,
+}: {
+  esCeliaco: boolean;
+  setEsCeliaco: (value: boolean) => void;
+  tieneAlergias: boolean;
+  setTieneAlergias: (value: boolean) => void;
+  movilidadReducida: boolean;
+  setMovilidadReducida: (value: boolean) => void;
+  observacionesReserva: string;
+  setObservacionesReserva: (value: string) => void;
+}) {
+  return (
+    <div className="grid gap-4">
+      <div className="grid gap-3 md:grid-cols-3">
+        <label className="flex min-h-16 items-center gap-3 rounded-2xl border border-amber-300 bg-white px-4 py-3 text-base font-medium text-stone-800">
+          <input
+            type="checkbox"
+            checked={esCeliaco}
+            onChange={(event) => setEsCeliaco(event.target.checked)}
+            className="h-5 w-5 rounded border-amber-400 text-amber-600 focus:ring-amber-500"
+          />
+          Es celiaco
+        </label>
+        <label className="flex min-h-16 items-center gap-3 rounded-2xl border border-amber-300 bg-white px-4 py-3 text-base font-medium text-stone-800">
+          <input
+            type="checkbox"
+            checked={tieneAlergias}
+            onChange={(event) => setTieneAlergias(event.target.checked)}
+            className="h-5 w-5 rounded border-amber-400 text-amber-600 focus:ring-amber-500"
+          />
+          Tiene alergias
+        </label>
+        <label className="flex min-h-16 items-center gap-3 rounded-2xl border border-amber-300 bg-white px-4 py-3 text-base font-medium text-stone-800">
+          <input
+            type="checkbox"
+            checked={movilidadReducida}
+            onChange={(event) => setMovilidadReducida(event.target.checked)}
+            className="h-5 w-5 rounded border-amber-400 text-amber-600 focus:ring-amber-500"
+          />
+          Movilidad reducida
+        </label>
+      </div>
+
+      <label className="block">
+        <span className="text-sm font-semibold uppercase tracking-[0.16em] text-stone-500">
+          Observaciones relevantes
+        </span>
+        <textarea
+          value={observacionesReserva}
+          onChange={(event) => setObservacionesReserva(event.target.value)}
+          placeholder="Ejemplo: alergia a frutos secos, sin lactosa o necesita acceso facil."
+          rows={4}
+          className="mt-2 w-full rounded-2xl border border-stone-300 bg-stone-50 px-4 py-4 text-base text-stone-900 outline-none transition focus:border-amber-500 focus:bg-white"
+        />
+      </label>
+    </div>
+  );
+}
+
 export default function Home() {
+  const [screen, setScreen] = useState<PublicScreen>("home");
+  const [accessMode, setAccessMode] = useState<AccessMode>(null);
   const [identificador, setIdentificador] = useState("");
+  const [scannerValue, setScannerValue] = useState("");
   const [lookupLoading, setLookupLoading] = useState(false);
   const [roomLoading, setRoomLoading] = useState(false);
   const [reservationLoading, setReservationLoading] = useState(false);
   const [realtimeConnected, setRealtimeConnected] = useState(false);
   const [error, setError] = useState("");
   const [infoMessage, setInfoMessage] = useState("");
+  const [showManualFallback, setShowManualFallback] = useState(false);
   const [asistente, setAsistente] = useState<AsistenteEncontrado | null>(null);
   const [evento, setEvento] = useState<EventoSala | null>(null);
+  const [identityCandidate, setIdentityCandidate] = useState<IdentityCandidate | null>(null);
   const [selectedSillaId, setSelectedSillaId] = useState<string | null>(null);
+  const [showReservationSummary, setShowReservationSummary] = useState(false);
+  const [showReservationQuestionnaire, setShowReservationQuestionnaire] = useState(false);
   const [esCeliaco, setEsCeliaco] = useState(false);
   const [tieneAlergias, setTieneAlergias] = useState(false);
   const [movilidadReducida, setMovilidadReducida] = useState(false);
   const [observacionesReserva, setObservacionesReserva] = useState("");
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const scannerInputRef = useRef<HTMLInputElement>(null);
   const selectedSillaIdRef = useRef<string | null>(null);
   const asistenteIdRef = useRef<string | null>(null);
 
@@ -96,6 +323,9 @@ export default function Home() {
     () => findSelectedChairDetails(evento, selectedSillaId),
     [evento, selectedSillaId],
   );
+  const isPresencialRoom = screen === "room" && accessMode === "presencial";
+  const canConfirmSelection =
+    Boolean(selectedSillaId && asistente && !reservationLoading && !reservaActual);
 
   function dismissToast(id: string) {
     setToasts((currentToasts) =>
@@ -117,17 +347,55 @@ export default function Home() {
     ]);
   }
 
-  function resetFlow() {
-    setError("");
-    setInfoMessage("");
-    setAsistente(null);
-    setEvento(null);
+  function resetReservationForm() {
     setSelectedSillaId(null);
+    setShowReservationSummary(false);
+    setShowReservationQuestionnaire(false);
     setEsCeliaco(false);
     setTieneAlergias(false);
     setMovilidadReducida(false);
     setObservacionesReserva("");
+  }
+
+  function clearSessionState() {
+    setAsistente(null);
+    setEvento(null);
+    setIdentityCandidate(null);
     setRealtimeConnected(false);
+    resetReservationForm();
+  }
+
+  function goHome() {
+    setAccessMode(null);
+    setScreen("home");
+    setError("");
+    setInfoMessage("");
+    setIdentificador("");
+    setScannerValue("");
+    setShowManualFallback(false);
+    clearSessionState();
+  }
+
+  function goToPresencialWait(message?: string) {
+    setAccessMode("presencial");
+    setScreen("presencial-wait");
+    setError("");
+    setInfoMessage(message ?? "");
+    setIdentificador("");
+    setScannerValue("");
+    setShowManualFallback(false);
+    clearSessionState();
+  }
+
+  function goToMovilIdentify() {
+    setAccessMode("movil");
+    setScreen("movil-identify");
+    setError("");
+    setInfoMessage("");
+    setIdentificador("");
+    setScannerValue("");
+    setShowManualFallback(false);
+    clearSessionState();
   }
 
   useEffect(() => {
@@ -156,6 +424,30 @@ export default function Home() {
     };
   }, [toasts]);
 
+  useEffect(() => {
+    if (screen !== "presencial-wait") {
+      return;
+    }
+
+    const focusInput = () => {
+      scannerInputRef.current?.focus();
+    };
+
+    focusInput();
+    const intervalId = window.setInterval(focusInput, 1200);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [screen]);
+
+  useEffect(() => {
+    if (!selectedSillaId) {
+      setShowReservationSummary(false);
+      setShowReservationQuestionnaire(false);
+    }
+  }, [selectedSillaId]);
+
   async function cargarEvento(eventoId: string, options?: { silent?: boolean }) {
     if (!options?.silent) {
       setRoomLoading(true);
@@ -164,6 +456,7 @@ export default function Home() {
     try {
       const eventoActualizado = await fetchEventoSala(eventoId);
       setEvento(eventoActualizado);
+      return eventoActualizado;
     } finally {
       if (!options?.silent) {
         setRoomLoading(false);
@@ -216,12 +509,6 @@ export default function Home() {
             setEvento(eventoActualizado);
           } catch {
             setError("No se pudo actualizar la sala en este momento.");
-            pushToast({
-              tone: "error",
-              title: "Sala no actualizada",
-              description:
-                "La sala no ha podido refrescarse automaticamente ahora mismo.",
-            });
           }
         },
       )
@@ -287,32 +574,20 @@ export default function Home() {
     };
   }, [evento?.id, asistente?.id]);
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    const identificadorLimpio = identificador.trim().toUpperCase();
+  async function identifyAssistantByIdentifier(
+    rawIdentifier: string,
+    mode: "presencial" | "movil",
+  ) {
+    const identificadorLimpio = rawIdentifier.trim().toUpperCase();
 
     if (!identificadorLimpio) {
-      resetFlow();
-      setError("Escribe tu identificador para continuar.");
-      pushToast({
-        tone: "error",
-        title: "Falta el identificador",
-        description: "Escribe el codigo del asistente para continuar.",
-      });
+      setError("Escribe o escanea un identificador valido para continuar.");
       return;
     }
 
     setLookupLoading(true);
     setError("");
     setInfoMessage("");
-    setAsistente(null);
-    setEvento(null);
-    setSelectedSillaId(null);
-    setEsCeliaco(false);
-    setTieneAlergias(false);
-    setMovilidadReducida(false);
-    setObservacionesReserva("");
 
     try {
       const response = await fetch(
@@ -330,31 +605,55 @@ export default function Home() {
       };
 
       if (!response.ok || !result.asistente) {
-        setError(result.error ?? "No se ha podido comprobar el identificador.");
+        const message =
+          result.error ?? "No se ha podido comprobar el identificador.";
+
+        setError(message);
+        if (mode === "presencial") {
+          setShowManualFallback(true);
+        }
         pushToast({
           tone: "error",
           title: "Asistente no encontrado",
-          description:
-            result.error ?? "Revisa el identificador y vuelve a intentarlo.",
+          description: message,
         });
         return;
       }
 
-      setAsistente(result.asistente);
-      await cargarEvento(result.asistente.evento_id);
-      setInfoMessage("Asistente identificado correctamente.");
-      pushToast({
-        tone: "success",
-        title: "Acceso correcto",
-        description: `${result.asistente.nombre} puede acceder a la sala.`,
-      });
-    } catch (submitError) {
+      const eventoCargado = await cargarEvento(result.asistente.evento_id);
+
+      if (mode === "presencial") {
+        setIdentityCandidate({
+          asistente: result.asistente,
+          evento: eventoCargado,
+        });
+        setInfoMessage("Comprueba la identidad antes de continuar.");
+        pushToast({
+          tone: "success",
+          title: "QR leido correctamente",
+          description: `Se ha identificado a ${result.asistente.nombre}.`,
+        });
+      } else {
+        setAsistente(result.asistente);
+        setEvento(eventoCargado);
+        setScreen("room");
+        setInfoMessage("Asistente identificado correctamente.");
+        pushToast({
+          tone: "success",
+          title: "Acceso correcto",
+          description: `${result.asistente.nombre} puede acceder a la sala.`,
+        });
+      }
+    } catch (identifyError) {
       const message =
-        submitError instanceof Error
-          ? submitError.message
+        identifyError instanceof Error
+          ? identifyError.message
           : "Ha ocurrido un problema de conexion.";
 
       setError(message);
+      if (mode === "presencial") {
+        setShowManualFallback(true);
+      }
       pushToast({
         tone: "error",
         title: "No se pudo continuar",
@@ -363,6 +662,27 @@ export default function Home() {
     } finally {
       setLookupLoading(false);
     }
+  }
+
+  async function handleMobileIdentifySubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    clearSessionState();
+    await identifyAssistantByIdentifier(identificador, "movil");
+  }
+
+  async function handlePresencialManualSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    clearSessionState();
+    await identifyAssistantByIdentifier(identificador, "presencial");
+  }
+
+  async function handleScannerSubmit() {
+    if (lookupLoading) {
+      return;
+    }
+
+    clearSessionState();
+    await identifyAssistantByIdentifier(scannerValue, "presencial");
   }
 
   async function handleConfirmReservation() {
@@ -379,7 +699,6 @@ export default function Home() {
     setEvento(
       applyOptimisticReservation(previousEvento, selectedSillaId, asistente.id),
     );
-    setSelectedSillaId(null);
 
     try {
       const response = await fetch("/api/reservas", {
@@ -405,6 +724,7 @@ export default function Home() {
       if (!response.ok) {
         setEvento(previousEvento);
         setSelectedSillaId(previousSelectedSillaId);
+        setShowReservationQuestionnaire(true);
         const message =
           result.error ?? "No se ha podido confirmar la reserva.";
 
@@ -421,19 +741,22 @@ export default function Home() {
       await cargarEvento(asistente.evento_id, { silent: true });
       const message = result.message ?? "Reserva creada correctamente.";
 
-      setInfoMessage(message);
-      setEsCeliaco(false);
-      setTieneAlergias(false);
-      setMovilidadReducida(false);
-      setObservacionesReserva("");
       pushToast({
         tone: "success",
         title: "Reserva confirmada",
         description: message,
       });
+
+      if (accessMode === "presencial") {
+        goToPresencialWait("Reserva completada. Esperando el siguiente QR.");
+      } else {
+        resetReservationForm();
+        setInfoMessage(message);
+      }
     } catch {
       setEvento(previousEvento);
       setSelectedSillaId(previousSelectedSillaId);
+      setShowReservationQuestionnaire(true);
       setError("Ha ocurrido un problema de conexion al guardar.");
       pushToast({
         tone: "error",
@@ -445,310 +768,509 @@ export default function Home() {
     }
   }
 
-  const showRoomScreen = Boolean(asistente && evento);
+  function enterPresencialRoom() {
+    if (!identityCandidate) {
+      return;
+    }
+
+    setAsistente(identityCandidate.asistente);
+    setEvento(identityCandidate.evento);
+    setIdentityCandidate(null);
+    setSelectedSillaId(null);
+    setScreen("room");
+    setInfoMessage("Asistente confirmado. Elige una silla para reservar.");
+    setScannerValue("");
+    setShowManualFallback(false);
+  }
+
+  function rejectIdentityCandidate() {
+    setIdentityCandidate(null);
+    setIdentificador("");
+    setError("");
+    setInfoMessage("Introduce el codigo correcto del asistente.");
+    setShowManualFallback(true);
+    setScreen("presencial-manual");
+  }
+
+  function openReservationSummary() {
+    if (!canConfirmSelection) {
+      return;
+    }
+
+    setShowReservationSummary(true);
+    setShowReservationQuestionnaire(false);
+  }
+
+  function cancelReservationSummary() {
+    setShowReservationSummary(false);
+    setSelectedSillaId(null);
+  }
+
+  function continueReservationFlow() {
+    setShowReservationSummary(false);
+    setShowReservationQuestionnaire(true);
+  }
+
+  function cancelReservationQuestionnaire() {
+    setShowReservationQuestionnaire(false);
+  }
+
+  const roomOverlay = evento && asistente ? (
+    <>
+      <div className="pointer-events-auto absolute left-4 top-4 max-w-md rounded-[28px] border border-stone-200 bg-white/94 px-5 py-4 shadow-sm backdrop-blur">
+        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-700">
+          {accessMode === "presencial" ? "Reserva presencial" : "Reserva movil"}
+        </p>
+        <h2 className="mt-2 text-2xl font-semibold tracking-tight text-stone-950">
+          {evento.nombre}
+        </h2>
+        <p className="mt-2 text-sm font-semibold uppercase tracking-[0.18em] text-stone-500">
+          {asistente.nombre}
+        </p>
+        <p className="mt-1 text-sm text-stone-600">{asistente.identificador}</p>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <StatBadge
+            label="Tiempo real"
+            value={realtimeConnected ? "Activo" : "En espera"}
+            tone={realtimeConnected ? "success" : "neutral"}
+          />
+          {reservaActual ? (
+            <StatBadge
+              label="Reserva"
+              value={`Mesa ${reservaActual.mesaNumero} · Silla ${reservaActual.sillaNumero}`}
+              tone="warning"
+            />
+          ) : null}
+        </div>
+      </div>
+
+      {selectedSillaId && seleccionActual && !reservaActual && !showReservationSummary && !showReservationQuestionnaire ? (
+        <div className="pointer-events-auto absolute bottom-6 right-6 flex flex-col items-end gap-3">
+          <div className="max-w-sm rounded-3xl border border-amber-300 bg-[linear-gradient(180deg,_#fff8db,_#fff1b8)] px-5 py-4 text-right shadow-sm">
+            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-800">
+              Seleccion actual
+            </p>
+            <p className="mt-2 text-base leading-7 text-stone-800">
+              Mesa {seleccionActual.mesaNumero}, Silla {seleccionActual.sillaNumero}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={openReservationSummary}
+            className="inline-flex min-h-16 min-w-[240px] items-center justify-center rounded-full bg-emerald-600 px-8 py-4 text-base font-semibold uppercase tracking-[0.18em] text-white shadow-[0_18px_40px_rgba(22,163,74,0.28)] transition hover:bg-emerald-700"
+          >
+            Confirmar reserva
+          </button>
+        </div>
+      ) : null}
+
+      {!selectedSillaId && !reservaActual ? (
+        <div className="pointer-events-auto absolute bottom-6 right-6 max-w-sm rounded-[28px] border border-stone-200 bg-white/94 px-5 py-4 shadow-sm backdrop-blur">
+          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-stone-500">
+            Elige una silla
+          </p>
+          <p className="mt-2 text-base leading-7 text-stone-700">
+            Toca una silla libre en 2D o en 3D para empezar la reserva.
+          </p>
+        </div>
+      ) : null}
+
+      {reservaActual ? (
+        <div className="pointer-events-auto absolute bottom-6 right-6 max-w-sm rounded-[28px] border border-sky-200 bg-white/94 px-5 py-4 shadow-sm backdrop-blur">
+          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-sky-700">
+            Reserva existente
+          </p>
+          <p className="mt-2 text-base leading-7 text-stone-700">
+            Este asistente ya tiene asignada la Mesa {reservaActual.mesaNumero}, Silla{" "}
+            {reservaActual.sillaNumero}.
+          </p>
+        </div>
+      ) : null}
+
+      {showReservationSummary && seleccionActual ? (
+        <OverlayModal
+          title="Confirma la reserva"
+          description="Comprueba la mesa y la silla antes de continuar con los datos adicionales."
+        >
+          <div className="rounded-[28px] border border-amber-200 bg-amber-50 px-5 py-5 text-stone-900">
+            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-800">
+              Seleccionada
+            </p>
+            <p className="mt-3 text-2xl font-semibold tracking-tight">
+              Mesa {seleccionActual.mesaNumero}, Silla {seleccionActual.sillaNumero}
+            </p>
+          </div>
+          <div className="mt-6 flex items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={cancelReservationSummary}
+              className="inline-flex min-h-14 items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={continueReservationFlow}
+              className="inline-flex min-h-14 items-center justify-center rounded-full bg-emerald-600 px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-emerald-700"
+            >
+              Continuar
+            </button>
+          </div>
+        </OverlayModal>
+      ) : null}
+
+      {showReservationQuestionnaire && seleccionActual ? (
+        <OverlayModal
+          title="Ultimos datos de la reserva"
+          description={`Completa el cuestionario para la Mesa ${seleccionActual.mesaNumero}, Silla ${seleccionActual.sillaNumero}.`}
+        >
+          <ReservationChecklist
+            esCeliaco={esCeliaco}
+            setEsCeliaco={setEsCeliaco}
+            tieneAlergias={tieneAlergias}
+            setTieneAlergias={setTieneAlergias}
+            movilidadReducida={movilidadReducida}
+            setMovilidadReducida={setMovilidadReducida}
+            observacionesReserva={observacionesReserva}
+            setObservacionesReserva={setObservacionesReserva}
+          />
+          <div className="mt-6 flex items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={cancelReservationQuestionnaire}
+              className="inline-flex min-h-14 items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={handleConfirmReservation}
+              disabled={reservationLoading}
+              className="inline-flex min-h-14 items-center justify-center rounded-full bg-emerald-600 px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-stone-300"
+            >
+              {reservationLoading ? "Guardando..." : "Confirmar reserva"}
+            </button>
+          </div>
+        </OverlayModal>
+      ) : null}
+    </>
+  ) : null;
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#fff7ed,_#f5f5f4_55%,_#e7e5e4)] px-6 py-12 text-stone-900">
+    <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#fff7ed,_#f5f5f4_55%,_#e7e5e4)] px-4 py-6 text-stone-900 sm:px-6 sm:py-12">
       <ToastStack toasts={toasts} onDismiss={dismissToast} />
 
-      {!showRoomScreen ? (
-        <div className="mx-auto max-w-2xl rounded-[36px] border border-stone-200 bg-white px-8 py-10 shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-10">
-          <p className="text-sm font-semibold uppercase tracking-[0.35em] text-amber-700">
-            Sala de Cenas Interactiva
-          </p>
-          <h1 className="mt-5 text-4xl font-semibold tracking-tight text-stone-950">
-            Identifica al asistente
-          </h1>
-          <p className="mt-5 text-lg leading-8 text-stone-600">
-            Introduce el codigo del asistente para entrar en la sala del evento.
-          </p>
+      {screen === "home" ? (
+        <div className="mx-auto grid max-w-5xl gap-6 lg:grid-cols-2">
+          <ModeButton
+            title="Reserva Presencial"
+            description="Pensada para mostradores y pantallas tactiles. Lee el QR del asistente, confirma la identidad y entra directamente en la sala para reservar."
+            onClick={goToPresencialWait}
+          />
+          <ModeButton
+            title="Reserva Movil"
+            description="Acceso tradicional con codigo de asistente, manteniendo la sala interactiva y mejorando la experiencia tactil para movil y tablet."
+            onClick={goToMovilIdentify}
+          />
 
-          <form className="mt-10 space-y-4" onSubmit={handleSubmit}>
-            <label
-              htmlFor="identificador"
-              className="block text-sm font-semibold uppercase tracking-[0.2em] text-stone-500"
+          <div className="lg:col-span-2">
+            <Link
+              href="/admin"
+              className="inline-flex min-h-12 items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-4 text-sm font-semibold uppercase tracking-[0.2em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
             >
-              Identificador del asistente
-            </label>
-            <input
-              id="identificador"
-              name="identificador"
-              type="text"
-              value={identificador}
-              onChange={(event) => setIdentificador(event.target.value)}
-              placeholder="Pon aqui tu codigo de asistente"
-              className="w-full rounded-2xl border border-stone-300 bg-stone-50 px-5 py-4 text-lg font-medium uppercase tracking-[0.15em] text-stone-900 outline-none transition focus:border-amber-500 focus:bg-white"
-            />
-            <div className="flex flex-wrap gap-3">
-              <button
-                type="submit"
-                disabled={lookupLoading || roomLoading}
-                className="inline-flex min-w-[220px] items-center justify-center rounded-full bg-stone-950 px-6 py-4 text-sm font-semibold uppercase tracking-[0.2em] text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-stone-400"
-              >
-                {lookupLoading ? "Entrando..." : "Entrar en la sala"}
-              </button>
-              <Link
-                href="/admin"
-                className="inline-flex min-w-[220px] items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-4 text-sm font-semibold uppercase tracking-[0.2em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
-              >
-                ¿ERES ADMINISTRADOR?
-              </Link>
-            </div>
-          </form>
+              Eres administrador
+            </Link>
+          </div>
+        </div>
+      ) : null}
+
+      {screen === "movil-identify" ? (
+        <ScreenCard
+          eyebrow="Reserva movil"
+          title="Identifica al asistente"
+          description="Introduce el codigo del asistente para entrar en la sala del evento y elegir su silla."
+        >
+          <IdentityCodeForm
+            identificador={identificador}
+            onChange={setIdentificador}
+            onSubmit={handleMobileIdentifySubmit}
+            submitLabel="Entrar en la sala"
+            busy={lookupLoading || roomLoading}
+          />
+
+          <div className="mt-6 flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={goHome}
+              className="inline-flex min-h-12 items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+            >
+              Volver al inicio
+            </button>
+          </div>
 
           {lookupLoading || roomLoading ? (
-            <div className="mt-8 rounded-3xl border border-amber-200 bg-amber-50 px-5 py-4 text-amber-800">
-              Estamos preparando el acceso a la sala.
+            <div className="mt-8">
+              <InlineMessage
+                tone="info"
+                title="Preparando acceso"
+                message="Estamos comprobando el asistente y cargando la sala del evento."
+              />
             </div>
           ) : null}
 
           {error ? (
-            <div className="mt-8 rounded-3xl border border-rose-200 bg-rose-50 px-5 py-4 text-rose-700">
-              <p className="text-sm font-semibold uppercase tracking-[0.2em]">
-                Error
-              </p>
-              <p className="mt-2 text-base leading-7">{error}</p>
+            <div className="mt-8">
+              <InlineMessage tone="error" title="Error" message={error} />
             </div>
           ) : null}
-        </div>
-      ) : (
-        <div className="mx-auto max-w-7xl space-y-6">
-          <section className="rounded-[36px] border border-stone-200 bg-white px-8 py-8 shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-10">
-            <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.35em] text-amber-700">
-                Asistente identificado
-              </p>
-              <h1 className="mt-4 text-4xl font-semibold tracking-tight text-stone-950">
-                {asistente?.nombre}
-              </h1>
-              <p className="mt-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-500">
-                {asistente?.identificador}
-              </p>
-            </div>
-          </section>
+        </ScreenCard>
+      ) : null}
 
-          <section className="rounded-[36px] border border-stone-200 bg-white px-8 py-8 shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-10">
-            <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.3em] text-amber-700">
-                Sala visual
-              </p>
-              <h2 className="mt-3 text-3xl font-semibold tracking-tight text-stone-950">
-                {evento?.nombre ?? "Evento"}
-              </h2>
-            </div>
-          </section>
+      {screen === "presencial-wait" ? (
+        <ScreenCard
+          eyebrow="Reserva presencial"
+          title="Escanea el QR del asistente"
+          description="La pantalla esta preparada para recibir automaticamente el codigo desde el lector QR."
+        >
+          <input
+            ref={scannerInputRef}
+            type="text"
+            value={scannerValue}
+            onChange={(event) => setScannerValue(event.target.value.toUpperCase())}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void handleScannerSubmit();
+              }
+            }}
+            className="sr-only"
+            autoCapitalize="characters"
+            autoCorrect="off"
+            spellCheck={false}
+          />
 
-          <section className="rounded-[36px] border border-stone-200 bg-white px-8 py-8 shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-10">
-            <div className="mt-2">
-              {!evento ? (
-                <div className="rounded-[28px] border border-dashed border-stone-300 bg-stone-50 px-6 py-10 text-stone-500">
-                  No se ha podido cargar la sala del evento.
+          <div
+            className="rounded-[32px] border border-dashed border-amber-300 bg-[linear-gradient(180deg,_#fff8db,_#fff1b8)] px-6 py-10 text-center shadow-[inset_0_1px_0_rgba(255,255,255,0.5)]"
+            onClick={() => scannerInputRef.current?.focus()}
+          >
+            <p className="text-sm font-semibold uppercase tracking-[0.3em] text-amber-800">
+              Lector QR activo
+            </p>
+            <p className="mt-4 text-3xl font-semibold tracking-tight text-stone-950">
+              {scannerValue.trim() || "Esperando codigo del asistente"}
+            </p>
+            <p className="mt-4 text-base leading-7 text-stone-700">
+              Si el lector esta conectado, al leer el QR se identificara al asistente automaticamente.
+            </p>
+          </div>
+
+          <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={goHome}
+              className="inline-flex min-h-12 items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+            >
+              Volver al inicio
+            </button>
+
+            {showManualFallback || error ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setIdentificador(scannerValue.trim());
+                  setScreen("presencial-manual");
+                }}
+                className="inline-flex min-h-12 items-center justify-center rounded-full bg-stone-950 px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-amber-700"
+              >
+                Identificar con codigo de asistente
+              </button>
+            ) : null}
+          </div>
+
+          {lookupLoading || roomLoading ? (
+            <div className="mt-8">
+              <InlineMessage
+                tone="info"
+                title="Comprobando QR"
+                message="Estamos verificando el asistente y preparando su evento."
+              />
+            </div>
+          ) : null}
+
+          {infoMessage ? (
+            <div className="mt-8">
+              <InlineMessage tone="success" title="Estado" message={infoMessage} />
+            </div>
+          ) : null}
+
+          {error ? (
+            <div className="mt-8">
+              <InlineMessage tone="error" title="Error" message={error} />
+            </div>
+          ) : null}
+        </ScreenCard>
+      ) : null}
+
+      {screen === "presencial-manual" ? (
+        <ScreenCard
+          eyebrow="Reserva presencial"
+          title="Identificacion manual"
+          description="Introduce el codigo del asistente si el QR no coincide o si quieres corregir la lectura."
+        >
+          <IdentityCodeForm
+            identificador={identificador}
+            onChange={setIdentificador}
+            onSubmit={handlePresencialManualSubmit}
+            submitLabel="Identificar asistente"
+            busy={lookupLoading || roomLoading}
+          />
+
+          <div className="mt-6 flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                setIdentificador("");
+                setError("");
+                setInfoMessage("");
+                setScreen("presencial-wait");
+              }}
+              className="inline-flex min-h-12 items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+            >
+              Volver a esperar QR
+            </button>
+          </div>
+
+          {lookupLoading || roomLoading ? (
+            <div className="mt-8">
+              <InlineMessage
+                tone="info"
+                title="Comprobando codigo"
+                message="Estamos validando el asistente y cargando el evento asociado."
+              />
+            </div>
+          ) : null}
+
+          {error ? (
+            <div className="mt-8">
+              <InlineMessage tone="error" title="Error" message={error} />
+            </div>
+          ) : null}
+        </ScreenCard>
+      ) : null}
+
+      {identityCandidate ? (
+        <OverlayModal
+          title={identityCandidate.asistente.nombre}
+          description={`Este QR corresponde al evento ${identityCandidate.evento.nombre}.`}
+        >
+          <div className="rounded-[28px] border border-amber-200 bg-amber-50 px-5 py-5 text-stone-900">
+            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-800">
+              Asistente identificado
+            </p>
+            <p className="mt-3 text-xl font-semibold tracking-tight">
+              {identityCandidate.asistente.identificador}
+            </p>
+            <p className="mt-2 text-base leading-7 text-stone-700">
+              Evento asociado: {identityCandidate.evento.nombre}
+            </p>
+          </div>
+
+          <div className="mt-6 flex items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={rejectIdentityCandidate}
+              className="inline-flex min-h-14 items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+            >
+              No eres tu?
+            </button>
+            <button
+              type="button"
+              onClick={enterPresencialRoom}
+              className="inline-flex min-h-14 items-center justify-center rounded-full bg-emerald-600 px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-emerald-700"
+            >
+              Continuar
+            </button>
+          </div>
+        </OverlayModal>
+      ) : null}
+
+      {screen === "room" && asistente && evento ? (
+        <div className="mx-auto max-w-[1800px] space-y-6">
+          {accessMode === "movil" ? (
+            <section className="rounded-[36px] border border-stone-200 bg-white px-8 py-8 shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-10">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <p className="text-sm font-semibold uppercase tracking-[0.35em] text-amber-700">
+                    Reserva movil
+                  </p>
+                  <h1 className="mt-4 text-4xl font-semibold tracking-tight text-stone-950">
+                    {asistente.nombre}
+                  </h1>
+                  <p className="mt-2 text-sm font-semibold uppercase tracking-[0.18em] text-stone-500">
+                    {asistente.identificador}
+                  </p>
+                  <p className="mt-4 text-base leading-7 text-stone-600">{evento.nombre}</p>
                 </div>
-              ) : (
-                <DinnerRoomScene
-                  evento={evento}
-                  selectedSillaId={selectedSillaId}
-                  currentAsistenteId={asistente?.id ?? ""}
-                  selectionLocked={Boolean(reservaActual) || reservationLoading}
-                  onSelectSilla={setSelectedSillaId}
-                />
-              )}
-            </div>
-
-            <div className="mt-6 rounded-3xl bg-stone-100 px-6 py-5">
-              <div className="flex flex-wrap gap-3">
-                <button
-                  type="button"
-                  onClick={resetFlow}
-                  className="inline-flex items-center justify-center rounded-full border border-stone-300 bg-white px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
-                >
-                  Cambiar asistente
-                </button>
-                <button
-                  type="button"
-                  onClick={handleConfirmReservation}
-                  disabled={
-                    !selectedSillaId ||
-                    !asistente ||
-                    reservationLoading ||
-                    Boolean(reservaActual)
-                  }
-                  className="inline-flex items-center justify-center rounded-full bg-emerald-600 px-6 py-4 text-sm font-semibold uppercase tracking-[0.2em] text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-stone-300"
-                >
-                  {reservationLoading
-                    ? "Guardando..."
-                    : reservaActual
-                      ? "Reserva ya asignada"
-                    : seleccionActual
-                        ? `Confirmar Mesa ${seleccionActual.mesaNumero}, Silla ${seleccionActual.sillaNumero}`
-                        : "Confirmar reserva"}
-                </button>
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={goToMovilIdentify}
+                    className="inline-flex min-h-12 items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+                  >
+                    Cambiar asistente
+                  </button>
+                </div>
               </div>
+            </section>
+          ) : null}
 
-              {selectedSillaId && !reservaActual ? (
-                <div className="mt-5 rounded-3xl border border-amber-300 bg-[linear-gradient(180deg,_#fff8db,_#fff1b8)] px-5 py-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]">
-                  <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-800">
-                    Datos importantes para la cena
-                  </p>
-                  <p className="mt-2 text-sm leading-6 text-amber-900/80">
-                    Marca aqui cualquier aviso relevante para que el equipo lo
-                    tenga presente antes del servicio.
-                  </p>
-                  <div className="mt-4 grid gap-3 md:grid-cols-3">
-                    <label className="flex items-center gap-3 rounded-2xl border border-amber-300 bg-white/80 px-4 py-3 text-sm font-medium text-stone-800">
-                      <input
-                        type="checkbox"
-                        checked={esCeliaco}
-                        onChange={(event) => setEsCeliaco(event.target.checked)}
-                        className="h-4 w-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500"
-                      />
-                      Es celiaco
-                    </label>
-                    <label className="flex items-center gap-3 rounded-2xl border border-amber-300 bg-white/80 px-4 py-3 text-sm font-medium text-stone-800">
-                      <input
-                        type="checkbox"
-                        checked={tieneAlergias}
-                        onChange={(event) => setTieneAlergias(event.target.checked)}
-                        className="h-4 w-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500"
-                      />
-                      Tiene alergias
-                    </label>
-                    <label className="flex items-center gap-3 rounded-2xl border border-amber-300 bg-white/80 px-4 py-3 text-sm font-medium text-stone-800">
-                      <input
-                        type="checkbox"
-                        checked={movilidadReducida}
-                        onChange={(event) => setMovilidadReducida(event.target.checked)}
-                        className="h-4 w-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500"
-                      />
-                      Movilidad reducida
-                    </label>
-                  </div>
-                  <label className="mt-4 block">
-                    <span className="text-sm font-semibold text-amber-900/80">
-                      Observaciones relevantes
-                    </span>
-                    <textarea
-                      value={observacionesReserva}
-                      onChange={(event) => setObservacionesReserva(event.target.value)}
-                      placeholder="Ejemplo: alergia a frutos secos, sin lactosa o necesita acceso facil."
-                      rows={3}
-                      className="mt-2 w-full rounded-2xl border border-amber-300 bg-white/90 px-4 py-3 text-sm text-stone-900 outline-none transition focus:border-amber-500"
-                    />
-                  </label>
-                </div>
-              ) : null}
+          <section className={accessMode === "presencial" ? "" : "rounded-[36px] border border-stone-200 bg-white px-4 py-4 shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-6 sm:py-6"}>
+            <DinnerRoomScene
+              evento={evento}
+              selectedSillaId={selectedSillaId}
+              currentAsistenteId={asistente.id}
+              selectionLocked={Boolean(reservaActual) || reservationLoading}
+              onSelectSilla={setSelectedSillaId}
+              overlay={roomOverlay}
+              touchMode
+              defaultViewMode="2d"
+              fullscreenBehavior={accessMode === "presencial" ? "locked" : "available"}
+              requestFullscreenOnMount={accessMode === "presencial"}
+            />
+          </section>
 
+          {accessMode === "movil" ? (
+            <section className="rounded-[36px] border border-stone-200 bg-white px-8 py-8 shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-10">
               {infoMessage ? (
-                <div className="mt-5 rounded-3xl border border-emerald-200 bg-emerald-50 px-5 py-4 text-emerald-700">
-                  <p className="text-sm font-semibold uppercase tracking-[0.2em]">
-                    Estado
-                  </p>
-                  <p className="mt-2 text-base leading-7">{infoMessage}</p>
+                <div className="mb-5">
+                  <InlineMessage tone="success" title="Estado" message={infoMessage} />
                 </div>
               ) : null}
 
               {error ? (
-                <div className="mt-5 rounded-3xl border border-rose-200 bg-rose-50 px-5 py-4 text-rose-700">
-                  <p className="text-sm font-semibold uppercase tracking-[0.2em]">
-                    Error
-                  </p>
-                  <p className="mt-2 text-base leading-7">{error}</p>
+                <div className="mb-5">
+                  <InlineMessage tone="error" title="Error" message={error} />
                 </div>
               ) : null}
 
-              {selectedSillaId && !reservaActual ? (
-                <div className="mt-5 rounded-3xl border border-amber-200 bg-white px-4 py-4">
-                  <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-700">
-                    Seleccion actual
-                  </p>
-                  <p className="mt-2 text-base leading-7 text-stone-700">
-                    {seleccionActual
-                      ? `Has elegido la Mesa ${seleccionActual.mesaNumero}, Silla ${seleccionActual.sillaNumero}.`
-                      : "Has elegido una silla para confirmar."}
-                  </p>
-                </div>
-              ) : null}
-
-              {!selectedSillaId && evento && !reservaActual ? (
-                <div className="mt-5 rounded-3xl border border-stone-200 bg-white px-4 py-4">
-                  <p className="text-sm font-semibold uppercase tracking-[0.18em] text-stone-500">
-                    Elige una silla
-                  </p>
-                  <p className="mt-2 text-base leading-7 text-stone-600">
-                    Pulsa sobre una silla libre para seleccionarla.
-                  </p>
-                </div>
-              ) : null}
-
-              {reservaActual ? (
-                <div className="mt-5 rounded-3xl border border-sky-200 bg-white px-4 py-4">
-                  <p className="text-sm font-semibold uppercase tracking-[0.18em] text-sky-700">
-                    Reserva existente
-                  </p>
-                  <p className="mt-2 text-base leading-7 text-stone-600">
-                    Este asistente ya tiene asignada la Mesa {reservaActual.mesaNumero},
-                    Silla {reservaActual.sillaNumero}.
-                  </p>
-                </div>
-              ) : null}
-
-              <div className="mt-5 grid gap-3 lg:grid-cols-2 2xl:grid-cols-4">
-                <LegendPill
-                  colorClassName="bg-emerald-500"
-                  title="Silla libre"
-                  description="Puedes elegirla para este asistente."
+              <div className="grid gap-3 lg:grid-cols-4">
+                <StatBadge
+                  label="Tiempo real"
+                  value={realtimeConnected ? "Activo" : "En espera"}
+                  tone={realtimeConnected ? "success" : "neutral"}
                 />
-                <LegendPill
-                  colorClassName="bg-rose-500"
-                  title="Silla ocupada"
-                  description="Ya pertenece a otra persona."
-                />
-                <LegendPill
-                  colorClassName="bg-yellow-400"
-                  title="Silla seleccionada"
-                  description="Es la que se va a confirmar."
-                />
-                <LegendPill
-                  colorClassName="bg-sky-500"
-                  title="Tu reserva"
-                  description="Es la silla ya asignada a este asistente."
-                />
+                {reservaActual ? (
+                  <StatBadge
+                    label="Tu reserva"
+                    value={`Mesa ${reservaActual.mesaNumero} · Silla ${reservaActual.sillaNumero}`}
+                    tone="warning"
+                  />
+                ) : null}
               </div>
-
-              <div className="mt-5 rounded-2xl border border-stone-200 bg-white px-4 py-3">
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm font-semibold text-stone-800">Tiempo real</p>
-                  <span
-                    className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] ${
-                      realtimeConnected
-                        ? "bg-emerald-100 text-emerald-700"
-                        : "bg-stone-200 text-stone-600"
-                    }`}
-                  >
-                    {realtimeConnected ? "Activo" : "En espera"}
-                  </span>
-                </div>
-                <p className="mt-1 text-sm leading-6 text-stone-500">
-                  {realtimeConnected
-                    ? "La sala se actualiza automaticamente cuando cambia una reserva."
-                    : "La actualizacion automatica no esta activa en este momento."}
-                </p>
-              </div>
-
-              {reservationLoading ? (
-                <div className="mt-5 rounded-3xl border border-amber-200 bg-white px-4 py-4">
-                  <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-700">
-                    Guardando
-                  </p>
-                  <p className="mt-2 text-base leading-7 text-stone-600">
-                    Estamos confirmando la reserva.
-                  </p>
-                </div>
-              ) : null}
-            </div>
-          </section>
+            </section>
+          ) : null}
         </div>
-      )}
+      ) : null}
     </main>
   );
 }
