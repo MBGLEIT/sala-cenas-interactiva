@@ -579,31 +579,33 @@ export default function DinnerRoomPlan2D({
         </svg>
       </div>
 
-      <div className="pointer-events-none absolute bottom-4 right-4 flex flex-col gap-3">
-        <button
-          type="button"
-          onClick={() => adjustZoom("in")}
-          className="pointer-events-auto inline-flex h-14 w-14 items-center justify-center rounded-full border border-stone-300 bg-white/95 text-2xl font-semibold text-stone-800 shadow-sm backdrop-blur transition hover:border-stone-950"
-          aria-label="Acercar"
-        >
-          +
-        </button>
-        <button
-          type="button"
-          onClick={() => adjustZoom("out")}
-          className="pointer-events-auto inline-flex h-14 w-14 items-center justify-center rounded-full border border-stone-300 bg-white/95 text-2xl font-semibold text-stone-800 shadow-sm backdrop-blur transition hover:border-stone-950"
-          aria-label="Alejar"
-        >
-          −
-        </button>
-        <button
-          type="button"
-          onClick={resetView}
-          className="pointer-events-auto inline-flex min-h-12 items-center justify-center rounded-full border border-stone-300 bg-white/95 px-4 py-3 text-xs font-semibold uppercase tracking-[0.18em] text-stone-700 shadow-sm backdrop-blur transition hover:border-stone-950 hover:text-stone-950"
-        >
-          Centrar
-        </button>
-      </div>
+      {touchMode ? (
+        <div className="pointer-events-none absolute bottom-4 right-4 flex flex-col gap-3">
+          <button
+            type="button"
+            onClick={() => adjustZoom("in")}
+            className="pointer-events-auto inline-flex h-14 w-14 items-center justify-center rounded-full border border-stone-300 bg-white/95 text-2xl font-semibold text-stone-800 shadow-sm backdrop-blur transition hover:border-stone-950"
+            aria-label="Acercar"
+          >
+            +
+          </button>
+          <button
+            type="button"
+            onClick={() => adjustZoom("out")}
+            className="pointer-events-auto inline-flex h-14 w-14 items-center justify-center rounded-full border border-stone-300 bg-white/95 text-2xl font-semibold text-stone-800 shadow-sm backdrop-blur transition hover:border-stone-950"
+            aria-label="Alejar"
+          >
+            −
+          </button>
+          <button
+            type="button"
+            onClick={resetView}
+            className="pointer-events-auto inline-flex min-h-12 items-center justify-center rounded-full border border-stone-300 bg-white/95 px-4 py-3 text-xs font-semibold uppercase tracking-[0.18em] text-stone-700 shadow-sm backdrop-blur transition hover:border-stone-950 hover:text-stone-950"
+          >
+            Centrar
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

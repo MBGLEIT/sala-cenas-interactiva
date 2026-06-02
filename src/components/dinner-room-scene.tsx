@@ -255,6 +255,7 @@ function SceneContent(props: DinnerRoomSceneProps) {
               currentAsistenteId={props.currentAsistenteId}
               selectionLocked={props.selectionLocked}
               onSelectSilla={props.onSelectSilla}
+              touchMode={props.touchMode}
             />
           </group>
         );

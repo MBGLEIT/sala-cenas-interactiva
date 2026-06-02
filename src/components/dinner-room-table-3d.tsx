@@ -18,11 +18,14 @@ type DinnerRoomTable3DProps = {
   currentAsistenteId: string;
   selectionLocked: boolean;
   onSelectSilla: (sillaId: string | null) => void;
+  touchMode?: boolean;
 };
 
 const TABLE_WORLD_HEIGHT = 0.18;
-const HIT_WIDTH = 0.96;
-const HIT_DEPTH = 0.84;
+const DEFAULT_HIT_WIDTH = 0.78;
+const DEFAULT_HIT_DEPTH = 0.64;
+const TOUCH_HIT_WIDTH = 0.96;
+const TOUCH_HIT_DEPTH = 0.84;
 
 let woodTextureCache: CanvasTexture | null = null;
 let clothTextureCache: CanvasTexture | null = null;
@@ -182,6 +185,7 @@ export default function DinnerRoomTable3D({
   currentAsistenteId,
   selectionLocked,
   onSelectSilla,
+  touchMode = false,
 }: DinnerRoomTable3DProps) {
   const tableDimensions = useMemo(() => getTableDimensions(sillas.length), [sillas.length]);
   const tableWorldWidth = (tableDimensions.width / 180) * 2.7;
@@ -300,7 +304,7 @@ export default function DinnerRoomTable3D({
                 }
               }}
               onPointerUp={(event) => {
-                if (event.button !== 0) {
+                if (!touchMode && event.button !== 0) {
                   return;
                 }
 
@@ -316,7 +320,13 @@ export default function DinnerRoomTable3D({
               castShadow
               position={[0, 0.11, 0.01]}
             >
-              <boxGeometry args={[HIT_WIDTH, 0.16, HIT_DEPTH]} />
+              <boxGeometry
+                args={[
+                  touchMode ? TOUCH_HIT_WIDTH : DEFAULT_HIT_WIDTH,
+                  0.16,
+                  touchMode ? TOUCH_HIT_DEPTH : DEFAULT_HIT_DEPTH,
+                ]}
+              />
               <meshBasicMaterial transparent opacity={0.01} depthWrite={false} />
             </mesh>
 
