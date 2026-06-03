@@ -214,6 +214,63 @@ function IdentityCodeForm({
   );
 }
 
+const VIRTUAL_KEYBOARD_ROWS = [
+  ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
+  ["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"],
+  ["A", "S", "D", "F", "G", "H", "J", "K", "L"],
+  ["Z", "X", "C", "V", "B", "N", "M"],
+] as const;
+
+function VirtualKeyboard({
+  onKeyPress,
+  onBackspace,
+  onClear,
+}: {
+  onKeyPress: (value: string) => void;
+  onBackspace: () => void;
+  onClear: () => void;
+}) {
+  return (
+    <div className="mt-8 rounded-[32px] border border-stone-200 bg-stone-50 p-4 shadow-sm">
+      <p className="px-2 text-sm font-semibold uppercase tracking-[0.2em] text-stone-500">
+        Teclado virtual
+      </p>
+      <div className="mt-4 space-y-3">
+        {VIRTUAL_KEYBOARD_ROWS.map((row, rowIndex) => (
+          <div key={rowIndex} className="flex flex-wrap justify-center gap-2">
+            {row.map((key) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => onKeyPress(key)}
+                className="inline-flex min-h-14 min-w-[3.4rem] items-center justify-center rounded-2xl border border-stone-300 bg-white px-4 py-3 text-lg font-semibold uppercase text-stone-900 transition hover:border-amber-500 hover:text-amber-700"
+              >
+                {key}
+              </button>
+            ))}
+          </div>
+        ))}
+        <div className="flex flex-wrap justify-center gap-3 pt-1">
+          <button
+            type="button"
+            onClick={onBackspace}
+            className="inline-flex min-h-14 min-w-[8.5rem] items-center justify-center rounded-2xl border border-stone-300 bg-white px-5 py-3 text-sm font-semibold uppercase tracking-[0.12em] text-stone-800 transition hover:border-amber-500 hover:text-amber-700"
+          >
+            Borrar
+          </button>
+          <button
+            type="button"
+            onClick={onClear}
+            className="inline-flex min-h-14 min-w-[8.5rem] items-center justify-center rounded-2xl border border-rose-200 bg-rose-50 px-5 py-3 text-sm font-semibold uppercase tracking-[0.12em] text-rose-700 transition hover:border-rose-400 hover:bg-rose-100"
+          >
+            Limpiar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function InlineMessage({
   tone,
   title,
@@ -353,6 +410,7 @@ export default function Home() {
   const [observacionesReserva, setObservacionesReserva] = useState("");
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const scannerInputRef = useRef<HTMLInputElement>(null);
+  const scannerProcessingRef = useRef(false);
   const selectedSillaIdRef = useRef<string | null>(null);
   const asistenteIdRef = useRef<string | null>(null);
 
@@ -480,16 +538,6 @@ export default function Home() {
       window.cancelAnimationFrame(frameId);
       window.clearTimeout(timeoutId);
     };
-  }, [screen]);
-
-  useEffect(() => {
-    if (screen !== "presencial-wait" || typeof document === "undefined") {
-      return;
-    }
-
-    if (!document.fullscreenElement) {
-      void document.documentElement.requestFullscreen().catch(() => undefined);
-    }
   }, [screen]);
 
   useEffect(() => {
@@ -705,6 +753,16 @@ export default function Home() {
       });
     } finally {
       setLookupLoading(false);
+      if (mode === "presencial" && lookupSource === "codigo") {
+        setScannerValue("");
+        window.setTimeout(() => {
+          try {
+            scannerInputRef.current?.focus();
+          } catch {
+            // Ignore focus failures on kiosk browsers.
+          }
+        }, 60);
+      }
     }
   }, [pushToast]);
 
@@ -793,10 +851,25 @@ export default function Home() {
   }
 
   const handleScannerSubmit = useCallback(async () => {
-    if (lookupLoading || roomLoading) {
+    const pendingCode = scannerValue.trim().toUpperCase();
+
+    if (
+      lookupLoading ||
+      roomLoading ||
+      scannerProcessingRef.current ||
+      pendingCode.length < 3
+    ) {
       return;
     }
-    await identifyAssistantByIdentifier(scannerValue, "presencial", "codigo");
+
+    scannerProcessingRef.current = true;
+
+    try {
+      await identifyAssistantByIdentifier(pendingCode, "presencial", "codigo");
+    } finally {
+      setScannerValue("");
+      scannerProcessingRef.current = false;
+    }
   }, [identifyAssistantByIdentifier, lookupLoading, roomLoading, scannerValue]);
 
   useEffect(() => {
@@ -805,7 +878,8 @@ export default function Home() {
       lookupLoading ||
       roomLoading ||
       identityCandidate ||
-      existingReservationPrompt
+      existingReservationPrompt ||
+      scannerProcessingRef.current
     ) {
       return;
     }
@@ -1287,18 +1361,10 @@ export default function Home() {
             value={scannerValue}
             autoFocus
             onChange={(event) => setScannerValue(event.target.value.toUpperCase())}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                void handleScannerSubmit();
-              }
-            }}
             className="absolute left-[-9999px] top-0 h-px w-px opacity-0"
             autoCapitalize="characters"
             autoCorrect="off"
             spellCheck={false}
-            aria-hidden="true"
-            tabIndex={-1}
           />
 
           <div className="relative flex flex-1 flex-col px-6 py-6 sm:px-10 sm:py-8">
@@ -1315,8 +1381,8 @@ export default function Home() {
               <div className="rounded-full border border-white/10 bg-black/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-stone-200">
                 {lookupLoading || roomLoading
                   ? "Procesando QR"
-                  : scannerValue.trim()
-                    ? "Codigo recibido"
+                  : scannerProcessingRef.current
+                    ? "Lectura recibida"
                     : "Lector QR activo"}
               </div>
             </div>
@@ -1347,8 +1413,8 @@ export default function Home() {
                 </div>
 
                 <p className="mt-8 text-sm font-medium uppercase tracking-[0.2em] text-stone-300">
-                  {scannerValue.trim()
-                    ? `Codigo capturado: ${scannerValue.trim()}`
+                  {lookupLoading || roomLoading || scannerProcessingRef.current
+                    ? "Procesando lectura automatica del asistente"
                     : "Esperando lectura automatica del asistente"}
                 </p>
 
@@ -1396,7 +1462,10 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={() => {
-                    setIdentificador(scannerValue.trim());
+                    setScannerValue("");
+                    setIdentificador("");
+                    setError("");
+                    setInfoMessage("");
                     setScreen("presencial-manual");
                   }}
                   className="inline-flex min-h-14 items-center justify-center rounded-full bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.2em] text-stone-900 transition hover:bg-amber-100"
@@ -1421,6 +1490,14 @@ export default function Home() {
             onSubmit={handlePresencialManualSubmit}
             submitLabel="Identificar asistente"
             busy={lookupLoading || roomLoading}
+          />
+
+          <VirtualKeyboard
+            onKeyPress={(value) =>
+              setIdentificador((current) => `${current}${value}`.toUpperCase())
+            }
+            onBackspace={() => setIdentificador((current) => current.slice(0, -1))}
+            onClear={() => setIdentificador("")}
           />
 
           <div className="mt-6 flex flex-wrap gap-3">
