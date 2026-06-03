@@ -222,10 +222,14 @@ function SceneContent(props: DinnerRoomSceneProps) {
           MIDDLE: MOUSE.DOLLY,
           RIGHT: MOUSE.PAN,
         }}
-        touches={{
-          ONE: TOUCH.ROTATE,
-          TWO: TOUCH.DOLLY_PAN,
-        }}
+        touches={
+          props.touchMode
+            ? {
+                ONE: TOUCH.ROTATE,
+                TWO: TOUCH.DOLLY_PAN,
+              }
+            : undefined
+        }
         onChange={clampControlsToHall}
       />
 

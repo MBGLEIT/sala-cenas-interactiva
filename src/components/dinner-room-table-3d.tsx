@@ -207,13 +207,12 @@ export default function DinnerRoomTable3D({
   }, [sillas.length, tableDimensions, tableWorldDepth, tableWorldWidth]);
 
   function handleChairSelection(
-    pointerType: string | undefined,
     button: number,
     sillaId: string,
     sillaOcupada: boolean,
     sillaEsDelAsistente: boolean,
   ) {
-    if (pointerType !== "touch" && button !== 0) {
+    if (button !== 0) {
       return;
     }
 
@@ -304,13 +303,21 @@ export default function DinnerRoomTable3D({
                 }
               }}
               onPointerUp={(event) => {
-                if (!touchMode && event.button !== 0) {
+                if (touchMode) {
+                  event.stopPropagation();
+                  if (selectionLocked || sillaOcupada || sillaEsDelAsistente) {
+                    return;
+                  }
+                  onSelectSilla(selectedSillaId === silla.id ? null : silla.id);
+                  return;
+                }
+
+                if (event.button !== 0) {
                   return;
                 }
 
                 event.stopPropagation();
                 handleChairSelection(
-                  event.pointerType,
                   event.button,
                   silla.id,
                   sillaOcupada,
