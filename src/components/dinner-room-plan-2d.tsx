@@ -22,6 +22,7 @@ type DinnerRoomPlan2DProps = {
   onSelectSilla: (sillaId: string | null) => void;
   showCompatibilityMessage?: boolean;
   touchMode?: boolean;
+  hideHeader?: boolean;
 };
 
 type PanOffset = {
@@ -91,6 +92,7 @@ export default function DinnerRoomPlan2D({
   onSelectSilla,
   showCompatibilityMessage = false,
   touchMode = false,
+  hideHeader = false,
 }: DinnerRoomPlan2DProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const dragStateRef = useRef<{
@@ -384,25 +386,27 @@ export default function DinnerRoomPlan2D({
 
   return (
     <div className="relative flex h-full flex-col bg-[linear-gradient(180deg,_#ffffff,_#fafaf9)]">
-      <div className="border-b border-stone-200 px-5 py-4">
-        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-700">
-          Vista desde techo
-        </p>
-        <p className="mt-1 text-sm text-stone-600">
-          {touchMode
-            ? "Arrastra para mover el plano. Usa los botones para acercar, alejar o centrar."
-            : "Rueda del raton para zoom. Arrastra para desplazarte por la sala."}
-        </p>
-        {showCompatibilityMessage ? (
-          <p className="mt-1 text-xs leading-5 text-stone-500">
-            Este equipo usa la vista 2D porque aqui el 3D no esta disponible.
+      {!hideHeader ? (
+        <div className="border-b border-stone-200 px-5 py-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-700">
+            Vista desde techo
           </p>
-        ) : null}
-      </div>
+          <p className="mt-1 text-sm text-stone-600">
+            {touchMode
+              ? "Arrastra para mover el plano. Usa los botones para acercar, alejar o centrar."
+              : "Rueda del raton para zoom. Arrastra para desplazarte por la sala."}
+          </p>
+          {showCompatibilityMessage ? (
+            <p className="mt-1 text-xs leading-5 text-stone-500">
+              Este equipo usa la vista 2D porque aqui el 3D no esta disponible.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       <div
         ref={viewportRef}
-        className={`flex-1 overflow-hidden p-4 select-none ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
+        className={`flex-1 overflow-hidden ${hideHeader ? "p-0" : "p-4"} select-none ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
         onPointerDown={handleViewportPointerDown}
         onPointerMove={handleViewportPointerMove}
         onPointerUp={endViewportDrag}

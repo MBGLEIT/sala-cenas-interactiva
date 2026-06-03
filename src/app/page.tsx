@@ -955,17 +955,6 @@ export default function Home() {
         </div>
       ) : null}
 
-      {!selectedSillaId && !reservaActual ? (
-        <div className="pointer-events-auto absolute bottom-4 left-1/2 w-[min(92vw,24rem)] -translate-x-1/2 rounded-[28px] border border-stone-200 bg-white/94 px-5 py-4 shadow-sm backdrop-blur sm:bottom-6 sm:left-auto sm:right-6 sm:w-auto sm:translate-x-0 sm:max-w-sm">
-          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-stone-500">
-            Elige una silla
-          </p>
-          <p className="mt-2 text-base leading-7 text-stone-700">
-            Toca una silla libre en 2D o en 3D para empezar la reserva.
-          </p>
-        </div>
-      ) : null}
-
       {reservaActual ? (
         <div className="pointer-events-auto absolute bottom-4 left-1/2 w-[min(92vw,24rem)] -translate-x-1/2 rounded-[28px] border border-sky-200 bg-white/94 px-5 py-4 shadow-sm backdrop-blur sm:bottom-6 sm:left-auto sm:right-6 sm:w-auto sm:translate-x-0 sm:max-w-sm">
           <p className="text-sm font-semibold uppercase tracking-[0.18em] text-sky-700">
@@ -1387,6 +1376,7 @@ export default function Home() {
                 defaultViewMode="2d"
                 fullscreenBehavior="locked"
                 requestFullscreenOnMount
+                hide2DHeader
               />
             </section>
           </div>

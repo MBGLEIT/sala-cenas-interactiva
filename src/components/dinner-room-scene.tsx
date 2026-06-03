@@ -29,6 +29,7 @@ type DinnerRoomSceneProps = {
   defaultViewMode?: ViewMode;
   fullscreenBehavior?: "available" | "locked" | "hidden";
   requestFullscreenOnMount?: boolean;
+  hide2DHeader?: boolean;
 };
 
 type ViewMode = "3d" | "2d";
@@ -466,6 +467,7 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
           {...props}
           showCompatibilityMessage={webglSupported === false}
           touchMode={props.touchMode}
+          hideHeader={props.hide2DHeader}
         />
       )}
     </div>
