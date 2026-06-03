@@ -1040,24 +1040,28 @@ export default function Home() {
       <ToastStack toasts={toasts} onDismiss={dismissToast} />
 
       {screen === "home" ? (
-        <div className="mx-auto grid max-w-5xl gap-6 lg:grid-cols-2">
-          <ModeButton
-            title="Reserva Presencial"
-            description="Pensada para mostradores y pantallas tactiles. Lee el QR del asistente, confirma la identidad y entra directamente en la sala para reservar."
-            onClick={goToPresencialWait}
-          />
-          <ModeButton
-            title="Reserva Movil"
-            description="Acceso tradicional con codigo de asistente, manteniendo la sala interactiva y mejorando la experiencia tactil para movil y tablet."
-            onClick={goToMovilIdentify}
-          />
+        <div className="mx-auto flex min-h-[calc(100vh-3rem)] max-w-5xl flex-col">
+          <div className="flex flex-1 items-center justify-center">
+            <div className="grid w-full max-w-5xl gap-6 lg:grid-cols-2">
+              <ModeButton
+                title="Reserva Presencial"
+                description="Pensada para mostradores y pantallas tactiles. Lee el QR del asistente, confirma la identidad y entra directamente en la sala para reservar."
+                onClick={goToPresencialWait}
+              />
+              <ModeButton
+                title="Reserva Movil"
+                description="Acceso tradicional con codigo de asistente, manteniendo la sala interactiva y mejorando la experiencia tactil para movil y tablet."
+                onClick={goToMovilIdentify}
+              />
+            </div>
+          </div>
 
-          <div className="lg:col-span-2">
+          <div className="flex justify-center pb-2">
             <Link
               href="/admin"
               className="inline-flex min-h-12 items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-4 text-sm font-semibold uppercase tracking-[0.2em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
             >
-              Eres administrador
+              ACCESO ADMINISTRADORES
             </Link>
           </div>
         </div>
@@ -1099,12 +1103,13 @@ export default function Home() {
               >
                 {lookupLoading ? "Entrando..." : "Entrar en la sala"}
               </button>
-              <Link
-                href="/admin"
+              <button
+                type="button"
+                onClick={goHome}
                 className="inline-flex min-w-[220px] items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-4 text-sm font-semibold uppercase tracking-[0.2em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
               >
-                ¿ERES ADMINISTRADOR?
-              </Link>
+                Volver al menu principal
+              </button>
             </div>
           </form>
 
@@ -1549,3 +1554,4 @@ export default function Home() {
     </main>
   );
 }
+
