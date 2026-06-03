@@ -396,11 +396,11 @@ export default function Home() {
     clearSessionState();
   }
 
-  function goToPresencialWait(message?: string) {
+  function goToPresencialWait(message?: unknown) {
     setAccessMode("presencial");
     setScreen("presencial-wait");
     setError("");
-    setInfoMessage(message ?? "");
+    setInfoMessage(typeof message === "string" ? message : "");
     setIdentificador("");
     setScannerValue("");
     setShowManualFallback(false);
@@ -1056,7 +1056,7 @@ export default function Home() {
                 <ModeButton
                   title="Reserva Presencial"
                   description="Pensada para mostradores y pantallas tactiles. Lee el QR del asistente, confirma la identidad y entra directamente en la sala para reservar."
-                  onClick={goToPresencialWait}
+                  onClick={() => goToPresencialWait()}
                 />
                 <ModeButton
                   title="Reserva Movil"
