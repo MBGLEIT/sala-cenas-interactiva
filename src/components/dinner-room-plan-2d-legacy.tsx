@@ -114,30 +114,36 @@ function getProtectedPlanFrame(
   const bottomPadding = 120;
   const minWidth = 900;
   const minHeight = 700;
-  const rawMinX = Math.max(0, bounds.minX - horizontalPadding);
-  const rawMinY = Math.max(0, bounds.minY - topPadding);
-  const rawMaxX = Math.min(ROOM_LAYOUT_WIDTH, bounds.maxX + horizontalPadding);
-  const rawMaxY = Math.min(ROOM_LAYOUT_HEIGHT, bounds.maxY + bottomPadding);
-  const contentWidth = Math.max(rawMaxX - rawMinX, minWidth);
-  const contentHeight = Math.max(rawMaxY - rawMinY, minHeight);
-  const minX = clamp(
-    rawMinX - Math.max(0, minWidth - (rawMaxX - rawMinX)) / 2,
-    0,
-    Math.max(0, ROOM_LAYOUT_WIDTH - contentWidth),
+  const roomCenterX = ROOM_LAYOUT_WIDTH / 2;
+  const roomCenterY = ROOM_LAYOUT_HEIGHT / 2;
+  const halfWidth = Math.min(
+    ROOM_LAYOUT_WIDTH / 2,
+    Math.max(
+      minWidth / 2,
+      roomCenterX - bounds.minX + horizontalPadding,
+      bounds.maxX - roomCenterX + horizontalPadding,
+    ),
   );
-  const minY = clamp(
-    rawMinY - Math.max(0, minHeight - (rawMaxY - rawMinY)) / 2,
-    0,
-    Math.max(0, ROOM_LAYOUT_HEIGHT - contentHeight),
+  const halfHeight = Math.min(
+    ROOM_LAYOUT_HEIGHT / 2,
+    Math.max(
+      minHeight / 2,
+      roomCenterY - bounds.minY + topPadding,
+      bounds.maxY - roomCenterY + bottomPadding,
+    ),
   );
+  const contentWidth = halfWidth * 2;
+  const contentHeight = halfHeight * 2;
+  const minX = roomCenterX - halfWidth;
+  const minY = roomCenterY - halfHeight;
 
   return {
     minX,
     minY,
     width: contentWidth,
     height: contentHeight,
-    centerX: minX + contentWidth / 2,
-    centerY: minY + contentHeight / 2,
+    centerX: roomCenterX,
+    centerY: roomCenterY,
   };
 }
 
@@ -232,8 +238,8 @@ export default function DinnerRoomPlan2DLegacy({
     setPan(
       clampPan(
         {
-          x: fitZoom * (centerX - protectedBounds.centerX),
-          y: fitZoom * (centerY - protectedBounds.centerY),
+          x: 0,
+          y: 0,
         },
         fitZoom,
         sceneFrame.width,
@@ -241,7 +247,7 @@ export default function DinnerRoomPlan2DLegacy({
       ),
     );
     hasInitializedRef.current = true;
-  }, [centerX, centerY, mesas.length, protectedBounds.centerX, protectedBounds.centerY, protectedBounds.height, protectedBounds.width, sceneFrame.height, sceneFrame.width]);
+  }, [mesas.length, protectedBounds.height, protectedBounds.width, sceneFrame.height, sceneFrame.width]);
 
   useEffect(() => {
     const viewportElement = viewportRef.current;

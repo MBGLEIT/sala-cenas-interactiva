@@ -138,14 +138,34 @@ function SceneContent(props: DinnerRoomSceneLegacyProps) {
   );
   const roomWorldWidth = ROOM_LAYOUT_WIDTH * ROOM_WORLD_SCALE;
   const roomWorldDepth = ROOM_LAYOUT_HEIGHT * ROOM_WORLD_SCALE;
-  const titleAnchor = roomPointToWorld(ROOM_LAYOUT_WIDTH / 2, ROOM_LAYOUT_HEIGHT / 2);
-  const nextTargetPoint = roomPointToWorld(protectedBounds.centerX, protectedBounds.centerY);
+  const roomCenterX = ROOM_LAYOUT_WIDTH / 2;
+  const roomCenterY = ROOM_LAYOUT_HEIGHT / 2;
+  const titleAnchor = roomPointToWorld(roomCenterX, roomCenterY);
+  const nextTargetPoint = roomPointToWorld(roomCenterX, roomCenterY);
   const spread = Math.max(
-    protectedBounds.width * ROOM_WORLD_SCALE,
-    protectedBounds.height * ROOM_WORLD_SCALE,
+    (Math.max(
+      roomCenterX - protectedBounds.minX,
+      protectedBounds.maxX - roomCenterX,
+    ) * 2) * ROOM_WORLD_SCALE,
+    (Math.max(
+      roomCenterY - protectedBounds.minY,
+      protectedBounds.maxY - roomCenterY,
+    ) * 2) * ROOM_WORLD_SCALE,
   );
-  const hallWidth = Math.max(protectedBounds.width * ROOM_WORLD_SCALE + 8, roomWorldWidth * 0.46);
-  const hallDepth = Math.max(protectedBounds.height * ROOM_WORLD_SCALE + 8, roomWorldDepth * 0.42);
+  const hallWidth = Math.max(
+    Math.max(
+      roomCenterX - protectedBounds.minX,
+      protectedBounds.maxX - roomCenterX,
+    ) * 2 * ROOM_WORLD_SCALE + 8,
+    roomWorldWidth * 0.46,
+  );
+  const hallDepth = Math.max(
+    Math.max(
+      roomCenterY - protectedBounds.minY,
+      protectedBounds.maxY - roomCenterY,
+    ) * 2 * ROOM_WORLD_SCALE + 8,
+    roomWorldDepth * 0.42,
+  );
   const [sceneAnchor, setSceneAnchor] = useState(() => ({
     targetX: nextTargetPoint.x,
     targetZ: nextTargetPoint.z,
