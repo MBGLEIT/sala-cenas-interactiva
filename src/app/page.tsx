@@ -2,7 +2,16 @@
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ChangeEvent,
+  FormEvent,
+  ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import ToastStack, { ToastItem } from "@/components/toast-stack";
 import {
@@ -411,6 +420,9 @@ export default function Home() {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const scannerInputRef = useRef<HTMLInputElement>(null);
   const scannerProcessingRef = useRef(false);
+  const scannerStartedAtRef = useRef(0);
+  const scannerLastInputAtRef = useRef(0);
+  const scannerPreviousValueRef = useRef("");
   const selectedSillaIdRef = useRef<string | null>(null);
   const asistenteIdRef = useRef<string | null>(null);
 
@@ -429,6 +441,39 @@ export default function Home() {
       // Ignore focus failures on kiosk browsers.
     }
   }, []);
+
+  const resetScannerCapture = useCallback(() => {
+    scannerStartedAtRef.current = 0;
+    scannerLastInputAtRef.current = 0;
+    scannerPreviousValueRef.current = "";
+    setScannerValue("");
+  }, []);
+
+  const handleScannerInputChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const nextValue = event.target.value.toUpperCase().replace(/\s+/g, "");
+      const previousValue = scannerPreviousValueRef.current;
+      const now = Date.now();
+
+      if (!nextValue) {
+        resetScannerCapture();
+        return;
+      }
+
+      if (
+        !previousValue ||
+        !nextValue.startsWith(previousValue) ||
+        nextValue.length <= previousValue.length
+      ) {
+        scannerStartedAtRef.current = now;
+      }
+
+      scannerLastInputAtRef.current = now;
+      scannerPreviousValueRef.current = nextValue;
+      setScannerValue(nextValue);
+    },
+    [resetScannerCapture],
+  );
 
   const reservaActual = useMemo(
     () => findReservaActual(evento, asistente?.id ?? null),
@@ -475,7 +520,7 @@ export default function Home() {
     setError("");
     setInfoMessage("");
     setIdentificador("");
-    setScannerValue("");
+    resetScannerCapture();
     setShowManualFallback(false);
     clearSessionState();
   }
@@ -487,7 +532,7 @@ export default function Home() {
     setError("");
     setInfoMessage(typeof message === "string" ? message : "");
     setIdentificador("");
-    setScannerValue("");
+    resetScannerCapture();
     setShowManualFallback(false);
     clearSessionState();
   }
@@ -498,7 +543,7 @@ export default function Home() {
     setError("");
     setInfoMessage("");
     setIdentificador("");
-    setScannerValue("");
+    resetScannerCapture();
     setShowManualFallback(false);
     clearSessionState();
   }
@@ -782,7 +827,7 @@ export default function Home() {
     } finally {
       setLookupLoading(false);
       if (mode === "presencial" && lookupSource === "codigo") {
-        setScannerValue("");
+        resetScannerCapture();
         window.setTimeout(() => {
           try {
             scannerInputRef.current?.focus();
@@ -792,7 +837,7 @@ export default function Home() {
         }, 60);
       }
     }
-  }, [pushToast]);
+  }, [pushToast, resetScannerCapture]);
 
   async function handleMobileIdentifySubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -880,6 +925,10 @@ export default function Home() {
 
   const handleScannerSubmit = useCallback(async () => {
     const pendingCode = scannerValue.trim().toUpperCase();
+    const startedAt = scannerStartedAtRef.current;
+    const lastInputAt = scannerLastInputAtRef.current;
+    const burstDuration = startedAt && lastInputAt ? lastInputAt - startedAt : 0;
+    const scannerLikeDurationLimit = 80 + pendingCode.length * 90;
 
     if (
       lookupLoading ||
@@ -890,15 +939,33 @@ export default function Home() {
       return;
     }
 
+    if (burstDuration > scannerLikeDurationLimit) {
+      resetScannerCapture();
+      setShowManualFallback(false);
+      setError("");
+      setInfoMessage("Esperando lectura automatica desde el lector QR.");
+      window.setTimeout(() => {
+        focusScannerInput();
+      }, 60);
+      return;
+    }
+
     scannerProcessingRef.current = true;
 
     try {
       await identifyAssistantByIdentifier(pendingCode, "presencial", "codigo");
     } finally {
-      setScannerValue("");
+      resetScannerCapture();
       scannerProcessingRef.current = false;
     }
-  }, [identifyAssistantByIdentifier, lookupLoading, roomLoading, scannerValue]);
+  }, [
+    focusScannerInput,
+    identifyAssistantByIdentifier,
+    lookupLoading,
+    resetScannerCapture,
+    roomLoading,
+    scannerValue,
+  ]);
 
   useEffect(() => {
     if (
@@ -1388,7 +1455,8 @@ export default function Home() {
             type="text"
             value={scannerValue}
             autoFocus
-            onChange={(event) => setScannerValue(event.target.value.toUpperCase())}
+            onChange={handleScannerInputChange}
+            onPaste={(event) => event.preventDefault()}
             onBlur={() => {
               window.setTimeout(() => {
                 focusScannerInput();
