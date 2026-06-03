@@ -4,9 +4,11 @@ import { PointerEvent, useEffect, useRef, useState } from "react";
 
 import { Mesa } from "@/lib/dinner-room";
 import {
+  ROOM_LAYOUT_HEIGHT,
+  ROOM_LAYOUT_WIDTH,
   getEventBounds,
+  getCenteredPlanFrame,
   PlanFrame,
-  getPlanFrame,
   getTableDimensions,
   getRectangleChairSlots,
 } from "@/lib/room-layout";
@@ -110,7 +112,7 @@ export default function AdminTableLayoutEditor({
   const previousStructureSignatureRef = useRef(structureSignature);
 
   const bounds = getEventBounds(mesas);
-  const computedFrame = getPlanFrame(mesas);
+  const computedFrame = getCenteredPlanFrame(mesas);
   const [sceneFrame, setSceneFrame] = useState<PlanFrame>(computedFrame);
   const centerX = sceneFrame.centerX;
   const centerY = sceneFrame.centerY;
@@ -162,8 +164,8 @@ export default function AdminTableLayoutEditor({
     setPan(
       clampPan(
         {
-          x: fitZoom * (centerX - bounds.centerX),
-          y: fitZoom * (centerY - bounds.centerY),
+          x: 0,
+          y: 0,
         },
         fitZoom,
         sceneFrame.width,
@@ -171,7 +173,7 @@ export default function AdminTableLayoutEditor({
       ),
     );
     hasInitializedRef.current = true;
-  }, [bounds.centerX, bounds.centerY, bounds.height, bounds.width, centerX, centerY, draggingMesa, draggingView, mesas.length, sceneFrame.height, sceneFrame.width]);
+  }, [draggingMesa, draggingView, mesas.length, sceneFrame.height, sceneFrame.width, bounds.height, bounds.width]);
 
   useEffect(() => {
     function handleFullscreenChange() {
@@ -296,15 +298,15 @@ export default function AdminTableLayoutEditor({
           pos_x: Math.round(
             clamp(
               point.x - tableDragRef.current.pointerOffsetX,
-              sceneFrame.minX + mesaDimensions.width / 2 + 50,
-              sceneFrame.minX + sceneFrame.width - mesaDimensions.width / 2 - 50,
+              mesaDimensions.width / 2 + 50,
+              ROOM_LAYOUT_WIDTH - mesaDimensions.width / 2 - 50,
             ),
           ),
           pos_y: Math.round(
             clamp(
               point.y - tableDragRef.current.pointerOffsetY,
-              sceneFrame.minY + mesaDimensions.height / 2 + 50,
-              sceneFrame.minY + sceneFrame.height - mesaDimensions.height / 2 - 50,
+              mesaDimensions.height / 2 + 50,
+              ROOM_LAYOUT_HEIGHT - mesaDimensions.height / 2 - 50,
             ),
           ),
         },

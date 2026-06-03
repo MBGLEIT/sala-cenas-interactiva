@@ -278,17 +278,20 @@ export function getTableDimensions(chairCount: number): TableDimensions {
 }
 
 export function getNextMesaPosition(existingTables: number) {
-  const columns = 6;
-  const startX = 420;
-  const startY = 360;
   const gapX = 520;
   const gapY = 330;
-  const col = existingTables % columns;
-  const row = Math.floor(existingTables / columns);
+  const centerX = ROOM_LAYOUT_WIDTH / 2;
+  const centerY = ROOM_LAYOUT_HEIGHT / 2;
+  const columnOffsets = [0, 1, -1, 2, -2, 3, -3];
+  const rowOffsets = [0, 1, -1, 2, -2, 3, -3, 4, -4];
+  const columnIndex = existingTables % columnOffsets.length;
+  const rowIndex = Math.floor(existingTables / columnOffsets.length);
+  const safeRowOffset =
+    rowOffsets[Math.min(rowIndex, rowOffsets.length - 1)] ?? rowIndex - rowOffsets.length + 5;
 
   return {
-    posX: startX + col * gapX,
-    posY: startY + row * gapY,
+    posX: clamp(centerX + columnOffsets[columnIndex] * gapX, 280, ROOM_LAYOUT_WIDTH - 280),
+    posY: clamp(centerY + safeRowOffset * gapY, 240, ROOM_LAYOUT_HEIGHT - 240),
   };
 }
 
@@ -408,5 +411,43 @@ export function getPlanFrame(
     height: contentHeight,
     centerX: minX + contentWidth / 2,
     centerY: minY + contentHeight / 2,
+  };
+}
+
+export function getCenteredPlanFrame(
+  mesas: Array<{ pos_x: number; pos_y: number; sillas: Array<unknown> }>,
+): PlanFrame {
+  const bounds = getEventBounds(mesas);
+  const horizontalPadding = 150;
+  const topPadding = 190;
+  const bottomPadding = 120;
+  const minWidth = 900;
+  const minHeight = 700;
+  const roomCenterX = ROOM_LAYOUT_WIDTH / 2;
+  const roomCenterY = ROOM_LAYOUT_HEIGHT / 2;
+  const halfWidth = Math.min(
+    ROOM_LAYOUT_WIDTH / 2,
+    Math.max(
+      minWidth / 2,
+      roomCenterX - bounds.minX + horizontalPadding,
+      bounds.maxX - roomCenterX + horizontalPadding,
+    ),
+  );
+  const halfHeight = Math.min(
+    ROOM_LAYOUT_HEIGHT / 2,
+    Math.max(
+      minHeight / 2,
+      roomCenterY - bounds.minY + topPadding,
+      bounds.maxY - roomCenterY + bottomPadding,
+    ),
+  );
+
+  return {
+    minX: roomCenterX - halfWidth,
+    minY: roomCenterY - halfHeight,
+    width: halfWidth * 2,
+    height: halfHeight * 2,
+    centerX: roomCenterX,
+    centerY: roomCenterY,
   };
 }
