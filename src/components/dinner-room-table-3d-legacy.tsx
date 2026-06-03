@@ -21,8 +21,8 @@ type DinnerRoomTable3DLegacyProps = {
 };
 
 const TABLE_WORLD_HEIGHT = 0.18;
-const HIT_WIDTH = 0.78;
-const HIT_DEPTH = 0.64;
+const HIT_WIDTH = 0.9;
+const HIT_DEPTH = 0.78;
 
 let woodTextureCache: CanvasTexture | null = null;
 let clothTextureCache: CanvasTexture | null = null;
@@ -298,14 +298,10 @@ export default function DinnerRoomTable3DLegacy({
                   event.stopPropagation();
                 }
               }}
-              onPointerUp={(event) => {
-                if (event.button !== 0) {
-                  return;
-                }
-
+              onClick={(event) => {
                 event.stopPropagation();
                 handleChairSelection(
-                  event.button,
+                  event.nativeEvent.button ?? 0,
                   silla.id,
                   sillaOcupada,
                   sillaEsDelAsistente,

@@ -404,7 +404,7 @@ export default function DinnerRoomSceneLegacy(props: DinnerRoomSceneLegacyProps)
           </button>
         </div>
 
-        <div className="pointer-events-auto absolute bottom-4 left-4 max-w-md rounded-2xl border border-stone-200 bg-white/92 px-4 py-3 shadow-sm backdrop-blur">
+        <div className="absolute bottom-4 left-4 max-w-md rounded-2xl border border-stone-200 bg-white/92 px-4 py-3 shadow-sm backdrop-blur">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-700">
             {show3D ? "Controles 3D" : "Controles 2D"}
           </p>
@@ -431,7 +431,7 @@ export default function DinnerRoomSceneLegacy(props: DinnerRoomSceneLegacyProps)
           Preparando la sala...
         </div>
       ) : show3D ? (
-        <Canvas dpr={[1, 1.75]} shadows gl={{ antialias: true }} eventPrefix="client">
+        <Canvas dpr={[1, 1.75]} shadows gl={{ antialias: true }} eventPrefix="offset">
           <Suspense fallback={null}>
             <SceneContent {...props} />
           </Suspense>

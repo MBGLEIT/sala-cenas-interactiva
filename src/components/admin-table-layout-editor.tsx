@@ -6,8 +6,10 @@ import { Mesa } from "@/lib/dinner-room";
 import {
   ROOM_LAYOUT_HEIGHT,
   ROOM_LAYOUT_WIDTH,
+  doesTableOverlapProtectedTitle,
   getEventBounds,
   getCenteredPlanFrame,
+  getProtectedTitleRect,
   PlanFrame,
   getTableDimensions,
   getRectangleChairSlots,
@@ -15,6 +17,7 @@ import {
 
 type AdminTableLayoutEditorProps = {
   mesas: Mesa[];
+  eventName: string;
   selectedMesaId: string;
   onSelectMesa: (mesaId: string) => void;
   onMoveMesa: (mesaId: string, posX: number, posY: number) => Promise<void>;
@@ -66,6 +69,7 @@ function createTransform(centerX: number, centerY: number, zoom: number, pan: Pa
 
 export default function AdminTableLayoutEditor({
   mesas,
+  eventName,
   selectedMesaId,
   onSelectMesa,
   onMoveMesa,
@@ -113,6 +117,7 @@ export default function AdminTableLayoutEditor({
 
   const bounds = getEventBounds(mesas);
   const computedFrame = getCenteredPlanFrame(mesas);
+  const protectedTitleRect = getProtectedTitleRect(eventName);
   const [sceneFrame, setSceneFrame] = useState<PlanFrame>(computedFrame);
   const centerX = sceneFrame.centerX;
   const centerY = sceneFrame.centerY;
@@ -288,27 +293,33 @@ export default function AdminTableLayoutEditor({
       }
 
       const mesaId = tableDragRef.current.mesaId!;
-      const mesaDimensions = getTableDimensions(
-        mesas.find((mesa) => mesa.id === mesaId)?.sillas.length ?? 8,
-      );
+      const mesaChairCount = mesas.find((mesa) => mesa.id === mesaId)?.sillas.length ?? 8;
+      const mesaDimensions = getTableDimensions(mesaChairCount);
       tableDragRef.current.moved = true;
+      const nextPosX = Math.round(
+        clamp(
+          point.x - tableDragRef.current.pointerOffsetX,
+          mesaDimensions.width / 2 + 50,
+          ROOM_LAYOUT_WIDTH - mesaDimensions.width / 2 - 50,
+        ),
+      );
+      const nextPosY = Math.round(
+        clamp(
+          point.y - tableDragRef.current.pointerOffsetY,
+          mesaDimensions.height / 2 + 50,
+          ROOM_LAYOUT_HEIGHT - mesaDimensions.height / 2 - 50,
+        ),
+      );
+
+      if (doesTableOverlapProtectedTitle(nextPosX, nextPosY, mesaChairCount, eventName)) {
+        return;
+      }
+
       setPositions((current) => ({
         ...current,
         [mesaId]: {
-          pos_x: Math.round(
-            clamp(
-              point.x - tableDragRef.current.pointerOffsetX,
-              mesaDimensions.width / 2 + 50,
-              ROOM_LAYOUT_WIDTH - mesaDimensions.width / 2 - 50,
-            ),
-          ),
-          pos_y: Math.round(
-            clamp(
-              point.y - tableDragRef.current.pointerOffsetY,
-              mesaDimensions.height / 2 + 50,
-              ROOM_LAYOUT_HEIGHT - mesaDimensions.height / 2 - 50,
-            ),
-          ),
+          pos_x: nextPosX,
+          pos_y: nextPosY,
         },
       }));
       return;
@@ -460,6 +471,19 @@ export default function AdminTableLayoutEditor({
               fill="#f7f0e5"
               stroke="#e7dcc7"
               strokeWidth="6"
+            />
+
+            <rect
+              x={protectedTitleRect.x}
+              y={protectedTitleRect.y}
+              width={protectedTitleRect.width}
+              height={protectedTitleRect.height}
+              rx="28"
+              fill="#ef4444"
+              fillOpacity="0.12"
+              stroke="#dc2626"
+              strokeWidth="5"
+              strokeDasharray="18 10"
             />
 
             {mesas.map((mesa) => {

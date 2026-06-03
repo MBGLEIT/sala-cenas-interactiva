@@ -1142,93 +1142,134 @@ export default function Home() {
       ) : null}
 
       {screen === "presencial-wait" ? (
-        <ScreenCard
-          eyebrow="Reserva presencial"
-          title="Escanea el QR del asistente"
-          description="La pantalla esta preparada para recibir automaticamente el codigo desde el lector QR."
-        >
-          <div className="rounded-[32px] border border-dashed border-amber-300 bg-[linear-gradient(180deg,_#fff8db,_#fff1b8)] px-6 py-10 text-center shadow-[inset_0_1px_0_rgba(255,255,255,0.5)]">
-            <p className="text-sm font-semibold uppercase tracking-[0.3em] text-amber-800">
-              Lector QR activo
-            </p>
-            <p className="mt-4 text-base leading-7 text-stone-700">
-              Si el lector esta conectado, al leer el QR se identificara al asistente automaticamente.
-            </p>
+        <section className="mx-auto flex min-h-[calc(100vh-3rem)] w-full max-w-6xl flex-col overflow-hidden rounded-[40px] border border-stone-800 bg-[linear-gradient(180deg,_#1c1917_0%,_#292524_48%,_#44403c_100%)] shadow-[0_30px_90px_rgba(28,25,23,0.3)]">
+          <input
+            ref={scannerInputRef}
+            id="scanner-identificador"
+            type="text"
+            value={scannerValue}
+            autoFocus
+            onChange={(event) => setScannerValue(event.target.value.toUpperCase())}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void handleScannerSubmit();
+              }
+            }}
+            className="absolute left-[-9999px] top-0 h-px w-px opacity-0"
+            autoCapitalize="characters"
+            autoCorrect="off"
+            spellCheck={false}
+            aria-hidden="true"
+            tabIndex={-1}
+          />
 
-            <div className="mx-auto mt-6 max-w-xl">
-              <label
-                htmlFor="scanner-identificador"
-                className="block text-sm font-semibold uppercase tracking-[0.2em] text-stone-600"
-              >
-                Codigo recibido
-              </label>
-              <input
-                ref={scannerInputRef}
-                id="scanner-identificador"
-                type="text"
-                value={scannerValue}
-                autoFocus
-                onChange={(event) => setScannerValue(event.target.value.toUpperCase())}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    void handleScannerSubmit();
-                  }
-                }}
-                className="mt-3 w-full rounded-3xl border border-stone-300 bg-white px-5 py-5 text-center text-2xl font-semibold uppercase tracking-[0.2em] text-stone-900 outline-none transition focus:border-amber-500"
-                placeholder="Esperando codigo del asistente"
-                autoCapitalize="characters"
-                autoCorrect="off"
-                spellCheck={false}
-              />
+          <div className="relative flex flex-1 flex-col px-6 py-6 sm:px-10 sm:py-8">
+            <div className="pointer-events-none absolute inset-0 overflow-hidden">
+              <div className="absolute left-[12%] top-[12%] h-52 w-52 rounded-full bg-amber-600/12 blur-3xl" />
+              <div className="absolute bottom-[10%] right-[10%] h-64 w-64 rounded-full bg-orange-300/10 blur-3xl" />
             </div>
-          </div>
 
-          <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
-            <button
-              type="button"
-              onClick={goHome}
-              className="inline-flex min-h-12 items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
-            >
-              Volver al inicio
-            </button>
+            <div className="relative flex items-start justify-between gap-4">
+              <div className="rounded-full border border-white/15 bg-white/8 px-4 py-2 text-xs font-semibold uppercase tracking-[0.28em] text-amber-100">
+                Reserva presencial
+              </div>
 
-            {showManualFallback || error ? (
+              <div className="rounded-full border border-white/10 bg-black/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-stone-200">
+                {lookupLoading || roomLoading
+                  ? "Procesando QR"
+                  : scannerValue.trim()
+                    ? "Codigo recibido"
+                    : "Lector QR activo"}
+              </div>
+            </div>
+
+            <div className="relative flex flex-1 items-center justify-center">
+              <div className="mx-auto max-w-3xl text-center">
+                <p className="text-sm font-semibold uppercase tracking-[0.35em] text-amber-200/85">
+                  SALA DE CENAS
+                </p>
+                <h1 className="mt-5 text-5xl font-semibold tracking-[0.16em] text-white sm:text-6xl">
+                  RESERVAS CENA
+                </h1>
+                <p className="mx-auto mt-8 max-w-2xl text-xl leading-9 text-stone-200 sm:text-2xl">
+                  Acerque su codigo QR al lector para comenzar con la reserva
+                </p>
+
+                <div className="mx-auto mt-10 flex h-28 w-28 items-center justify-center rounded-[28px] border border-white/15 bg-white/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.16)] backdrop-blur-sm">
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {Array.from({ length: 9 }).map((_, index) => (
+                      <span
+                        key={index}
+                        className={`h-3.5 w-3.5 rounded-sm ${
+                          index % 2 === 0 ? "bg-amber-200" : "bg-white/45"
+                        }`}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                <p className="mt-8 text-sm font-medium uppercase tracking-[0.2em] text-stone-300">
+                  {scannerValue.trim()
+                    ? `Codigo capturado: ${scannerValue.trim()}`
+                    : "Esperando lectura automatica del asistente"}
+                </p>
+
+                {lookupLoading || roomLoading ? (
+                  <div className="mx-auto mt-8 max-w-2xl rounded-[28px] border border-amber-300/20 bg-amber-100/10 px-5 py-4 text-left text-amber-50 backdrop-blur-sm">
+                    <p className="text-sm font-semibold uppercase tracking-[0.18em]">
+                      Comprobando QR
+                    </p>
+                    <p className="mt-2 text-base leading-7 text-stone-100">
+                      Estamos verificando el asistente y preparando el evento asociado.
+                    </p>
+                  </div>
+                ) : null}
+
+                {infoMessage ? (
+                  <div className="mx-auto mt-8 max-w-2xl rounded-[28px] border border-emerald-300/20 bg-emerald-100/10 px-5 py-4 text-left text-emerald-50 backdrop-blur-sm">
+                    <p className="text-sm font-semibold uppercase tracking-[0.18em]">
+                      Estado
+                    </p>
+                    <p className="mt-2 text-base leading-7 text-stone-100">{infoMessage}</p>
+                  </div>
+                ) : null}
+
+                {error ? (
+                  <div className="mx-auto mt-8 max-w-2xl rounded-[28px] border border-rose-300/20 bg-rose-100/10 px-5 py-4 text-left text-rose-50 backdrop-blur-sm">
+                    <p className="text-sm font-semibold uppercase tracking-[0.18em]">
+                      Error
+                    </p>
+                    <p className="mt-2 text-base leading-7 text-stone-100">{error}</p>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="relative mt-4 flex flex-wrap items-end justify-between gap-3">
               <button
                 type="button"
-                onClick={() => {
-                  setIdentificador(scannerValue.trim());
-                  setScreen("presencial-manual");
-                }}
-                className="inline-flex min-h-12 items-center justify-center rounded-full bg-stone-950 px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-amber-700"
+                onClick={goHome}
+                className="inline-flex min-h-14 items-center justify-center rounded-full border border-white/20 bg-white/10 px-6 py-3 text-sm font-semibold uppercase tracking-[0.2em] text-white transition hover:bg-white/16"
               >
-                Identificar con codigo de asistente
+                Volver al inicio
               </button>
-            ) : null}
+
+              {showManualFallback || error ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIdentificador(scannerValue.trim());
+                    setScreen("presencial-manual");
+                  }}
+                  className="inline-flex min-h-14 items-center justify-center rounded-full bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.2em] text-stone-900 transition hover:bg-amber-100"
+                >
+                  Identificar con codigo de asistente
+                </button>
+              ) : null}
+            </div>
           </div>
-
-          {lookupLoading || roomLoading ? (
-            <div className="mt-8">
-              <InlineMessage
-                tone="info"
-                title="Comprobando QR"
-                message="Estamos verificando el asistente y preparando su evento."
-              />
-            </div>
-          ) : null}
-
-          {infoMessage ? (
-            <div className="mt-8">
-              <InlineMessage tone="success" title="Estado" message={infoMessage} />
-            </div>
-          ) : null}
-
-          {error ? (
-            <div className="mt-8">
-              <InlineMessage tone="error" title="Error" message={error} />
-            </div>
-          ) : null}
-        </ScreenCard>
+        </section>
       ) : null}
 
       {screen === "presencial-manual" ? (

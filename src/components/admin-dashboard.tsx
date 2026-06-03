@@ -908,12 +908,15 @@ export default function AdminDashboard({
       return;
     }
 
-    const nextPosition = getNextMesaPosition(panelData?.evento.mesas.length ?? 0);
-
     const chairCount =
       mesaCapacityPreset === "custom"
         ? Number(mesaCustomChairCount)
         : Number(mesaCapacityPreset);
+    const nextPosition = getNextMesaPosition(
+      panelData?.evento.mesas.length ?? 0,
+      chairCount,
+      panelData?.evento.nombre ?? "EVENTO",
+    );
 
     const created = await runAdminAction(
       "/api/admin/mesas/create",
@@ -2008,6 +2011,7 @@ export default function AdminDashboard({
             >
               <AdminTableLayoutEditor
                 mesas={panelData?.evento.mesas ?? []}
+                eventName={panelData?.evento.nombre ?? "EVENTO"}
                 selectedMesaId={mesaEditId}
                 onSelectMesa={setMesaEditId}
                 onMoveMesa={handleMoveMesa}

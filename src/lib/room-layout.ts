@@ -51,6 +51,13 @@ export type EventTitleFootprint = {
   planFontSize: number;
 };
 
+export type ProtectedTitleRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(value, max));
 }
@@ -245,6 +252,62 @@ export function getEventTitleFootprint(
   };
 }
 
+export function getProtectedTitleRect(
+  eventName: string,
+  roomWidth: number = ROOM_LAYOUT_WIDTH,
+  roomHeight: number = ROOM_LAYOUT_HEIGHT,
+): ProtectedTitleRect {
+  const footprint = getEventTitleFootprint(eventName, roomWidth, roomHeight);
+
+  return {
+    x: roomWidth / 2 - footprint.safeWidth / 2,
+    y: roomHeight / 2 - footprint.safeHeight / 2,
+    width: footprint.safeWidth,
+    height: footprint.safeHeight,
+  };
+}
+
+export function doRectanglesOverlap(
+  first: { x: number; y: number; width: number; height: number },
+  second: { x: number; y: number; width: number; height: number },
+) {
+  return !(
+    first.x + first.width <= second.x ||
+    second.x + second.width <= first.x ||
+    first.y + first.height <= second.y ||
+    second.y + second.height <= first.y
+  );
+}
+
+export function getTableRect(
+  posX: number,
+  posY: number,
+  chairCount: number,
+  margin: number = 0,
+) {
+  const dimensions = getTableDimensions(chairCount);
+
+  return {
+    x: posX - dimensions.width / 2 - margin,
+    y: posY - dimensions.height / 2 - margin,
+    width: dimensions.width + margin * 2,
+    height: dimensions.height + margin * 2,
+  };
+}
+
+export function doesTableOverlapProtectedTitle(
+  posX: number,
+  posY: number,
+  chairCount: number,
+  eventName: string,
+  margin: number = 24,
+) {
+  return doRectanglesOverlap(
+    getTableRect(posX, posY, chairCount, margin),
+    getProtectedTitleRect(eventName),
+  );
+}
+
 export function getTableDimensions(chairCount: number): TableDimensions {
   if (chairCount <= 8) {
     return {
@@ -277,21 +340,53 @@ export function getTableDimensions(chairCount: number): TableDimensions {
   };
 }
 
-export function getNextMesaPosition(existingTables: number) {
+export function getNextMesaPosition(
+  existingTables: number,
+  chairCount: number = 8,
+  eventName: string = "EVENTO",
+) {
   const gapX = 520;
   const gapY = 330;
   const centerX = ROOM_LAYOUT_WIDTH / 2;
   const centerY = ROOM_LAYOUT_HEIGHT / 2;
   const columnOffsets = [0, 1, -1, 2, -2, 3, -3];
   const rowOffsets = [0, 1, -1, 2, -2, 3, -3, 4, -4];
-  const columnIndex = existingTables % columnOffsets.length;
-  const rowIndex = Math.floor(existingTables / columnOffsets.length);
-  const safeRowOffset =
-    rowOffsets[Math.min(rowIndex, rowOffsets.length - 1)] ?? rowIndex - rowOffsets.length + 5;
+  const dimensions = getTableDimensions(chairCount);
+
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const candidateIndex = existingTables + attempt;
+    const columnIndex = candidateIndex % columnOffsets.length;
+    const rowIndex = Math.floor(candidateIndex / columnOffsets.length);
+    const safeRowOffset =
+      rowOffsets[Math.min(rowIndex, rowOffsets.length - 1)] ??
+      rowIndex - rowOffsets.length + 5;
+    const posX = clamp(
+      centerX + columnOffsets[columnIndex] * gapX,
+      dimensions.width / 2 + 60,
+      ROOM_LAYOUT_WIDTH - dimensions.width / 2 - 60,
+    );
+    const posY = clamp(
+      centerY + safeRowOffset * gapY,
+      dimensions.height / 2 + 60,
+      ROOM_LAYOUT_HEIGHT - dimensions.height / 2 - 60,
+    );
+
+    if (!doesTableOverlapProtectedTitle(posX, posY, chairCount, eventName)) {
+      return { posX, posY };
+    }
+  }
 
   return {
-    posX: clamp(centerX + columnOffsets[columnIndex] * gapX, 280, ROOM_LAYOUT_WIDTH - 280),
-    posY: clamp(centerY + safeRowOffset * gapY, 240, ROOM_LAYOUT_HEIGHT - 240),
+    posX: clamp(
+      centerX + gapX,
+      dimensions.width / 2 + 60,
+      ROOM_LAYOUT_WIDTH - dimensions.width / 2 - 60,
+    ),
+    posY: clamp(
+      centerY,
+      dimensions.height / 2 + 60,
+      ROOM_LAYOUT_HEIGHT - dimensions.height / 2 - 60,
+    ),
   };
 }
 

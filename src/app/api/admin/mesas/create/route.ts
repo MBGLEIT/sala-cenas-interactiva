@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { isAdminAuthenticated } from "@/lib/admin-auth";
-import { getNextMesaPosition } from "@/lib/room-layout";
+import { doesTableOverlapProtectedTitle, getNextMesaPosition } from "@/lib/room-layout";
 import { adminCreateMesaSchema } from "@/lib/schemas";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
@@ -27,6 +27,28 @@ export async function POST(request: Request) {
   }
 
   const { eventoId, numero, quantity, chairCount, posX, posY } = parsedBody.data;
+
+  const { data: eventoData, error: eventoError } = await supabaseAdmin
+    .from("eventos")
+    .select("nombre")
+    .eq("id", eventoId)
+    .maybeSingle();
+
+  if (eventoError || !eventoData) {
+    return NextResponse.json(
+      { error: "No se pudo recuperar la configuracion del evento." },
+      { status: 500 },
+    );
+  }
+
+  const eventName = eventoData.nombre ?? "EVENTO";
+
+  if (quantity === 1 && doesTableOverlapProtectedTitle(posX, posY, chairCount, eventName)) {
+    return NextResponse.json(
+      { error: "No se puede crear una mesa dentro de la zona protegida del nombre del evento." },
+      { status: 400 },
+    );
+  }
 
   const { data: mesasExistentes, error: existingMesasError } = await supabaseAdmin
     .from("mesas")
@@ -56,7 +78,7 @@ export async function POST(request: Request) {
     const position =
       quantity === 1
         ? { posX, posY }
-        : getNextMesaPosition(existingTableCount + index);
+        : getNextMesaPosition(existingTableCount + index, chairCount, eventName);
 
     return {
       evento_id: eventoId,
