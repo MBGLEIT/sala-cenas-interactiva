@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { crearReservaSchema, eliminarReservaPublicaSchema } from "@/lib/schemas";
+import { supabaseAdmin } from "@/lib/supabase-admin";
 import { supabase } from "@/lib/supabase";
 
 export async function POST(request: Request) {
@@ -173,7 +174,7 @@ export async function DELETE(request: Request) {
   }
 
   const { asistenteId } = parsedBody.data;
-  const { data, error } = await supabase
+  const { data, error } = await supabaseAdmin
     .from("reservas")
     .delete()
     .eq("asistente_id", asistenteId)
