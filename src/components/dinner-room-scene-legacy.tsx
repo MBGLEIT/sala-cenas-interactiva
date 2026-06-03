@@ -50,6 +50,31 @@ function browserSupportsWebGL() {
   }
 }
 
+function getProtectedBounds(
+  bounds: ReturnType<typeof getEventBounds>,
+  footprint: ReturnType<typeof getEventTitleFootprint>,
+) {
+  const titleMinX = ROOM_LAYOUT_WIDTH / 2 - footprint.safeWidth / 2;
+  const titleMaxX = ROOM_LAYOUT_WIDTH / 2 + footprint.safeWidth / 2;
+  const titleMinY = ROOM_LAYOUT_HEIGHT / 2 - footprint.safeHeight / 2;
+  const titleMaxY = ROOM_LAYOUT_HEIGHT / 2 + footprint.safeHeight / 2;
+  const minX = Math.min(bounds.minX, titleMinX);
+  const maxX = Math.max(bounds.maxX, titleMaxX);
+  const minY = Math.min(bounds.minY, titleMinY);
+  const maxY = Math.max(bounds.maxY, titleMaxY);
+
+  return {
+    minX,
+    maxX,
+    minY,
+    maxY,
+    width: maxX - minX,
+    height: maxY - minY,
+    centerX: (minX + maxX) / 2,
+    centerY: (minY + maxY) / 2,
+  };
+}
+
 function EventLabel({
   evento,
   centerX,
@@ -106,13 +131,21 @@ function SceneContent(props: DinnerRoomSceneLegacyProps) {
     [mesas],
   );
   const bounds = useMemo(() => getEventBounds(mesas), [mesas]);
+  const titleFootprint = useMemo(() => getEventTitleFootprint(props.evento.nombre), [props.evento.nombre]);
+  const protectedBounds = useMemo(
+    () => getProtectedBounds(bounds, titleFootprint),
+    [bounds, titleFootprint],
+  );
   const roomWorldWidth = ROOM_LAYOUT_WIDTH * ROOM_WORLD_SCALE;
   const roomWorldDepth = ROOM_LAYOUT_HEIGHT * ROOM_WORLD_SCALE;
   const titleAnchor = roomPointToWorld(ROOM_LAYOUT_WIDTH / 2, ROOM_LAYOUT_HEIGHT / 2);
-  const nextTargetPoint = roomPointToWorld(bounds.centerX, bounds.centerY);
-  const spread = Math.max(bounds.width * ROOM_WORLD_SCALE, bounds.height * ROOM_WORLD_SCALE);
-  const hallWidth = Math.max(bounds.width * ROOM_WORLD_SCALE + 8, roomWorldWidth * 0.46);
-  const hallDepth = Math.max(bounds.height * ROOM_WORLD_SCALE + 8, roomWorldDepth * 0.42);
+  const nextTargetPoint = roomPointToWorld(protectedBounds.centerX, protectedBounds.centerY);
+  const spread = Math.max(
+    protectedBounds.width * ROOM_WORLD_SCALE,
+    protectedBounds.height * ROOM_WORLD_SCALE,
+  );
+  const hallWidth = Math.max(protectedBounds.width * ROOM_WORLD_SCALE + 8, roomWorldWidth * 0.46);
+  const hallDepth = Math.max(protectedBounds.height * ROOM_WORLD_SCALE + 8, roomWorldDepth * 0.42);
   const [sceneAnchor, setSceneAnchor] = useState(() => ({
     targetX: nextTargetPoint.x,
     targetZ: nextTargetPoint.z,

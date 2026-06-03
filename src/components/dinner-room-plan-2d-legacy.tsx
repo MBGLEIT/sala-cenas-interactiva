@@ -6,10 +6,9 @@ import { EventoSala, Silla, normalizeReservas } from "@/lib/dinner-room";
 import {
   ROOM_LAYOUT_HEIGHT,
   ROOM_LAYOUT_WIDTH,
-  getEventBounds,
-  PlanFrame,
   getEventTitleFootprint,
-  getPlanFrame,
+  PlanFrame,
+  getEventBounds,
   getTableDimensions,
   getRectangleChairSlots,
 } from "@/lib/room-layout";
@@ -82,6 +81,66 @@ function createTransform(centerX: number, centerY: number, zoom: number, pan: Pa
   return `translate(${centerX + pan.x} ${centerY + pan.y}) scale(${zoom}) translate(${-centerX} ${-centerY})`;
 }
 
+function getProtectedBounds(
+  bounds: ReturnType<typeof getEventBounds>,
+  titleFootprint: ReturnType<typeof getEventTitleFootprint>,
+) {
+  const titleMinX = ROOM_LAYOUT_WIDTH / 2 - titleFootprint.safeWidth / 2;
+  const titleMaxX = ROOM_LAYOUT_WIDTH / 2 + titleFootprint.safeWidth / 2;
+  const titleMinY = ROOM_LAYOUT_HEIGHT / 2 - titleFootprint.safeHeight / 2;
+  const titleMaxY = ROOM_LAYOUT_HEIGHT / 2 + titleFootprint.safeHeight / 2;
+  const minX = Math.min(bounds.minX, titleMinX);
+  const maxX = Math.max(bounds.maxX, titleMaxX);
+  const minY = Math.min(bounds.minY, titleMinY);
+  const maxY = Math.max(bounds.maxY, titleMaxY);
+
+  return {
+    minX,
+    maxX,
+    minY,
+    maxY,
+    width: maxX - minX,
+    height: maxY - minY,
+    centerX: (minX + maxX) / 2,
+    centerY: (minY + maxY) / 2,
+  };
+}
+
+function getProtectedPlanFrame(
+  bounds: ReturnType<typeof getProtectedBounds>,
+): PlanFrame {
+  const horizontalPadding = 150;
+  const topPadding = 190;
+  const bottomPadding = 120;
+  const minWidth = 900;
+  const minHeight = 700;
+  const rawMinX = Math.max(0, bounds.minX - horizontalPadding);
+  const rawMinY = Math.max(0, bounds.minY - topPadding);
+  const rawMaxX = Math.min(ROOM_LAYOUT_WIDTH, bounds.maxX + horizontalPadding);
+  const rawMaxY = Math.min(ROOM_LAYOUT_HEIGHT, bounds.maxY + bottomPadding);
+  const contentWidth = Math.max(rawMaxX - rawMinX, minWidth);
+  const contentHeight = Math.max(rawMaxY - rawMinY, minHeight);
+  const minX = clamp(
+    rawMinX - Math.max(0, minWidth - (rawMaxX - rawMinX)) / 2,
+    0,
+    Math.max(0, ROOM_LAYOUT_WIDTH - contentWidth),
+  );
+  const minY = clamp(
+    rawMinY - Math.max(0, minHeight - (rawMaxY - rawMinY)) / 2,
+    0,
+    Math.max(0, ROOM_LAYOUT_HEIGHT - contentHeight),
+  );
+
+  return {
+    minX,
+    minY,
+    width: contentWidth,
+    height: contentHeight,
+    centerX: minX + contentWidth / 2,
+    centerY: minY + contentHeight / 2,
+  };
+}
+
 export default function DinnerRoomPlan2DLegacy({
   evento,
   selectedSillaId,
@@ -120,10 +179,17 @@ export default function DinnerRoomPlan2DLegacy({
     [mesas],
   );
   const bounds = useMemo(() => getEventBounds(mesas), [mesas]);
-  const computedFrame = useMemo(() => getPlanFrame(mesas), [mesas]);
   const titleFootprint = useMemo(
     () => getEventTitleFootprint(evento.nombre, ROOM_LAYOUT_WIDTH, ROOM_LAYOUT_HEIGHT),
     [evento.nombre],
+  );
+  const protectedBounds = useMemo(
+    () => getProtectedBounds(bounds, titleFootprint),
+    [bounds, titleFootprint],
+  );
+  const computedFrame = useMemo(
+    () => getProtectedPlanFrame(protectedBounds),
+    [protectedBounds],
   );
   const [sceneFrame, setSceneFrame] = useState<PlanFrame>(computedFrame);
   const centerX = sceneFrame.centerX;
@@ -151,8 +217,8 @@ export default function DinnerRoomPlan2DLegacy({
   useEffect(() => {
     const fitZoom = clamp(
       Math.min(
-        (sceneFrame.width * 0.84) / Math.max(bounds.width + 180, 520),
-        (sceneFrame.height * 0.84) / Math.max(bounds.height + 180, 360),
+        (sceneFrame.width * 0.84) / Math.max(protectedBounds.width + 180, 520),
+        (sceneFrame.height * 0.84) / Math.max(protectedBounds.height + 180, 360),
       ),
       0.72,
       1.38,
@@ -166,8 +232,8 @@ export default function DinnerRoomPlan2DLegacy({
     setPan(
       clampPan(
         {
-          x: fitZoom * (centerX - bounds.centerX),
-          y: fitZoom * (centerY - bounds.centerY),
+          x: fitZoom * (centerX - protectedBounds.centerX),
+          y: fitZoom * (centerY - protectedBounds.centerY),
         },
         fitZoom,
         sceneFrame.width,
@@ -175,7 +241,7 @@ export default function DinnerRoomPlan2DLegacy({
       ),
     );
     hasInitializedRef.current = true;
-  }, [bounds.centerX, bounds.centerY, bounds.height, bounds.width, centerX, centerY, mesas.length, sceneFrame.height, sceneFrame.width]);
+  }, [centerX, centerY, mesas.length, protectedBounds.centerX, protectedBounds.centerY, protectedBounds.height, protectedBounds.width, sceneFrame.height, sceneFrame.width]);
 
   useEffect(() => {
     const viewportElement = viewportRef.current;
