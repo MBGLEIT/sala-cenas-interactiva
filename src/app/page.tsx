@@ -414,6 +414,22 @@ export default function Home() {
   const selectedSillaIdRef = useRef<string | null>(null);
   const asistenteIdRef = useRef<string | null>(null);
 
+  const requestPresencialFullscreen = useCallback(() => {
+    if (typeof document === "undefined" || document.fullscreenElement) {
+      return;
+    }
+
+    void document.documentElement.requestFullscreen().catch(() => undefined);
+  }, []);
+
+  const focusScannerInput = useCallback(() => {
+    try {
+      scannerInputRef.current?.focus();
+    } catch {
+      // Ignore focus failures on kiosk browsers.
+    }
+  }, []);
+
   const reservaActual = useMemo(
     () => findReservaActual(evento, asistente?.id ?? null),
     [evento, asistente?.id],
@@ -465,9 +481,7 @@ export default function Home() {
   }
 
   function goToPresencialWait(message?: unknown) {
-    if (typeof document !== "undefined" && !document.fullscreenElement) {
-      void document.documentElement.requestFullscreen().catch(() => undefined);
-    }
+    requestPresencialFullscreen();
     setAccessMode("presencial");
     setScreen("presencial-wait");
     setError("");
@@ -524,21 +538,35 @@ export default function Home() {
       return;
     }
 
-    const focusInput = () => {
-      try {
-        scannerInputRef.current?.focus();
-      } catch {
-        // Ignore focus failures on kiosk browsers.
+    const keepScannerReady = () => {
+      focusScannerInput();
+      requestPresencialFullscreen();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        keepScannerReady();
       }
     };
 
-    const frameId = window.requestAnimationFrame(focusInput);
-    const timeoutId = window.setTimeout(focusInput, 180);
+    const frameId = window.requestAnimationFrame(keepScannerReady);
+    const timeoutId = window.setTimeout(keepScannerReady, 180);
+    const intervalId = window.setInterval(keepScannerReady, 1200);
+    window.addEventListener("focus", keepScannerReady);
+    window.addEventListener("pointerdown", keepScannerReady);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    document.addEventListener("fullscreenchange", keepScannerReady);
+
     return () => {
       window.cancelAnimationFrame(frameId);
       window.clearTimeout(timeoutId);
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", keepScannerReady);
+      window.removeEventListener("pointerdown", keepScannerReady);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      document.removeEventListener("fullscreenchange", keepScannerReady);
     };
-  }, [screen]);
+  }, [focusScannerInput, requestPresencialFullscreen, screen]);
 
   useEffect(() => {
     if (!selectedSillaId) {
@@ -1361,6 +1389,11 @@ export default function Home() {
             value={scannerValue}
             autoFocus
             onChange={(event) => setScannerValue(event.target.value.toUpperCase())}
+            onBlur={() => {
+              window.setTimeout(() => {
+                focusScannerInput();
+              }, 60);
+            }}
             className="absolute left-[-9999px] top-0 h-px w-px opacity-0"
             autoCapitalize="characters"
             autoCorrect="off"
