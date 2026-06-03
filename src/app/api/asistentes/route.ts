@@ -10,9 +10,11 @@ export const fetchCache = "force-no-store";
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
+  const identificador = searchParams.get("identificador") ?? undefined;
+  const codigo = searchParams.get("codigo") ?? undefined;
   const parsedQuery = buscarAsistenteSchema.safeParse({
-    identificador: searchParams.get("identificador"),
-    codigo: searchParams.get("codigo"),
+    identificador,
+    codigo,
   });
 
   if (!parsedQuery.success) {
