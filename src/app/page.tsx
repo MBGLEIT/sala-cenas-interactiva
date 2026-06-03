@@ -461,9 +461,12 @@ export default function Home() {
       }
     };
 
-    focusInput();
-    const intervalId = window.setInterval(focusInput, 1200);
-    return () => window.clearInterval(intervalId);
+    const frameId = window.requestAnimationFrame(focusInput);
+    const timeoutId = window.setTimeout(focusInput, 180);
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      window.clearTimeout(timeoutId);
+    };
   }, [screen]);
 
   useEffect(() => {
@@ -1042,17 +1045,25 @@ export default function Home() {
       {screen === "home" ? (
         <div className="mx-auto flex min-h-[calc(100vh-3rem)] max-w-5xl flex-col">
           <div className="flex flex-1 items-center justify-center">
-            <div className="grid w-full max-w-5xl gap-6 lg:grid-cols-2">
-              <ModeButton
-                title="Reserva Presencial"
-                description="Pensada para mostradores y pantallas tactiles. Lee el QR del asistente, confirma la identidad y entra directamente en la sala para reservar."
-                onClick={goToPresencialWait}
-              />
-              <ModeButton
-                title="Reserva Movil"
-                description="Acceso tradicional con codigo de asistente, manteniendo la sala interactiva y mejorando la experiencia tactil para movil y tablet."
-                onClick={goToMovilIdentify}
-              />
+            <div className="w-full max-w-5xl">
+              <div className="mb-10 text-center">
+                <h1 className="text-4xl font-semibold tracking-[0.18em] text-stone-950 sm:text-5xl">
+                  SALA DE CENAS
+                </h1>
+              </div>
+
+              <div className="grid gap-6 lg:grid-cols-2">
+                <ModeButton
+                  title="Reserva Presencial"
+                  description="Pensada para mostradores y pantallas tactiles. Lee el QR del asistente, confirma la identidad y entra directamente en la sala para reservar."
+                  onClick={goToPresencialWait}
+                />
+                <ModeButton
+                  title="Reserva Movil"
+                  description="Acceso tradicional con codigo de asistente, manteniendo la sala interactiva y mejorando la experiencia tactil para movil y tablet."
+                  onClick={goToMovilIdentify}
+                />
+              </div>
             </div>
           </div>
 
@@ -1156,6 +1167,7 @@ export default function Home() {
                 id="scanner-identificador"
                 type="text"
                 value={scannerValue}
+                autoFocus
                 onChange={(event) => setScannerValue(event.target.value.toUpperCase())}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
