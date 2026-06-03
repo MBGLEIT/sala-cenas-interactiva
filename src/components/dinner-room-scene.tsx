@@ -14,7 +14,7 @@ import {
   ROOM_LAYOUT_WIDTH,
   ROOM_WORLD_SCALE,
   getEventTitleFootprint,
-  getEventBounds,
+  getProtectedEventBounds,
   roomPointToWorld,
 } from "@/lib/room-layout";
 
@@ -105,19 +105,41 @@ function SceneContent(props: DinnerRoomSceneProps) {
   const structureSignature = useMemo(
     () =>
       mesas
-        .map((mesa) => `${mesa.numero}:${mesa.sillas.length}`)
+        .map((mesa) => `${mesa.numero}:${mesa.sillas.length}:${mesa.pos_x}:${mesa.pos_y}`)
         .sort()
         .join("|"),
     [mesas],
   );
-  const bounds = useMemo(() => getEventBounds(mesas), [mesas]);
+  const protectedBounds = useMemo(
+    () => getProtectedEventBounds(mesas, props.evento.nombre),
+    [mesas, props.evento.nombre],
+  );
   const roomWorldWidth = ROOM_LAYOUT_WIDTH * ROOM_WORLD_SCALE;
   const roomWorldDepth = ROOM_LAYOUT_HEIGHT * ROOM_WORLD_SCALE;
   const titleAnchor = roomPointToWorld(ROOM_LAYOUT_WIDTH / 2, ROOM_LAYOUT_HEIGHT / 2);
-  const nextTargetPoint = roomPointToWorld(bounds.centerX, bounds.centerY);
-  const spread = Math.max(bounds.width * ROOM_WORLD_SCALE, bounds.height * ROOM_WORLD_SCALE);
-  const hallWidth = Math.max(bounds.width * ROOM_WORLD_SCALE + 8, roomWorldWidth * 0.46);
-  const hallDepth = Math.max(bounds.height * ROOM_WORLD_SCALE + 8, roomWorldDepth * 0.42);
+  const roomCenterX = ROOM_LAYOUT_WIDTH / 2;
+  const roomCenterY = ROOM_LAYOUT_HEIGHT / 2;
+  const nextTargetPoint = roomPointToWorld(roomCenterX, roomCenterY);
+  const spread = Math.max(
+    (Math.max(roomCenterX - protectedBounds.minX, protectedBounds.maxX - roomCenterX) * 2) *
+      ROOM_WORLD_SCALE,
+    (Math.max(roomCenterY - protectedBounds.minY, protectedBounds.maxY - roomCenterY) * 2) *
+      ROOM_WORLD_SCALE,
+  );
+  const hallWidth = Math.max(
+    Math.max(
+      roomCenterX - protectedBounds.minX,
+      protectedBounds.maxX - roomCenterX,
+    ) * 2 * ROOM_WORLD_SCALE + 8,
+    roomWorldWidth * 0.46,
+  );
+  const hallDepth = Math.max(
+    Math.max(
+      roomCenterY - protectedBounds.minY,
+      protectedBounds.maxY - roomCenterY,
+    ) * 2 * ROOM_WORLD_SCALE + 8,
+    roomWorldDepth * 0.42,
+  );
   const [sceneAnchor, setSceneAnchor] = useState(() => ({
     targetX: nextTargetPoint.x,
     targetZ: nextTargetPoint.z,
@@ -434,7 +456,7 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
           Preparando la sala...
         </div>
       ) : show3D ? (
-        <Canvas dpr={[1, 1.75]} shadows gl={{ antialias: true }} eventPrefix="client">
+        <Canvas dpr={[1, 1.75]} shadows gl={{ antialias: true }} eventPrefix="offset">
           <Suspense fallback={null}>
             <SceneContent {...props} />
           </Suspense>

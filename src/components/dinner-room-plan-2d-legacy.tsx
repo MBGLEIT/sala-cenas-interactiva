@@ -8,7 +8,8 @@ import {
   ROOM_LAYOUT_WIDTH,
   getEventTitleFootprint,
   PlanFrame,
-  getEventBounds,
+  getProtectedCenteredPlanFrame,
+  getProtectedEventBounds,
   getTableDimensions,
   getRectangleChairSlots,
 } from "@/lib/room-layout";
@@ -81,72 +82,6 @@ function createTransform(centerX: number, centerY: number, zoom: number, pan: Pa
   return `translate(${centerX + pan.x} ${centerY + pan.y}) scale(${zoom}) translate(${-centerX} ${-centerY})`;
 }
 
-function getProtectedBounds(
-  bounds: ReturnType<typeof getEventBounds>,
-  titleFootprint: ReturnType<typeof getEventTitleFootprint>,
-) {
-  const titleMinX = ROOM_LAYOUT_WIDTH / 2 - titleFootprint.safeWidth / 2;
-  const titleMaxX = ROOM_LAYOUT_WIDTH / 2 + titleFootprint.safeWidth / 2;
-  const titleMinY = ROOM_LAYOUT_HEIGHT / 2 - titleFootprint.safeHeight / 2;
-  const titleMaxY = ROOM_LAYOUT_HEIGHT / 2 + titleFootprint.safeHeight / 2;
-  const minX = Math.min(bounds.minX, titleMinX);
-  const maxX = Math.max(bounds.maxX, titleMaxX);
-  const minY = Math.min(bounds.minY, titleMinY);
-  const maxY = Math.max(bounds.maxY, titleMaxY);
-
-  return {
-    minX,
-    maxX,
-    minY,
-    maxY,
-    width: maxX - minX,
-    height: maxY - minY,
-    centerX: (minX + maxX) / 2,
-    centerY: (minY + maxY) / 2,
-  };
-}
-
-function getProtectedPlanFrame(
-  bounds: ReturnType<typeof getProtectedBounds>,
-): PlanFrame {
-  const horizontalPadding = 150;
-  const topPadding = 190;
-  const bottomPadding = 120;
-  const minWidth = 900;
-  const minHeight = 700;
-  const roomCenterX = ROOM_LAYOUT_WIDTH / 2;
-  const roomCenterY = ROOM_LAYOUT_HEIGHT / 2;
-  const halfWidth = Math.min(
-    ROOM_LAYOUT_WIDTH / 2,
-    Math.max(
-      minWidth / 2,
-      roomCenterX - bounds.minX + horizontalPadding,
-      bounds.maxX - roomCenterX + horizontalPadding,
-    ),
-  );
-  const halfHeight = Math.min(
-    ROOM_LAYOUT_HEIGHT / 2,
-    Math.max(
-      minHeight / 2,
-      roomCenterY - bounds.minY + topPadding,
-      bounds.maxY - roomCenterY + bottomPadding,
-    ),
-  );
-  const contentWidth = halfWidth * 2;
-  const contentHeight = halfHeight * 2;
-  const minX = roomCenterX - halfWidth;
-  const minY = roomCenterY - halfHeight;
-
-  return {
-    minX,
-    minY,
-    width: contentWidth,
-    height: contentHeight,
-    centerX: roomCenterX,
-    centerY: roomCenterY,
-  };
-}
-
 export default function DinnerRoomPlan2DLegacy({
   evento,
   selectedSillaId,
@@ -179,23 +114,22 @@ export default function DinnerRoomPlan2DLegacy({
   const structureSignature = useMemo(
     () =>
       mesas
-        .map((mesa) => `${mesa.numero}:${mesa.sillas.length}`)
+        .map((mesa) => `${mesa.numero}:${mesa.sillas.length}:${mesa.pos_x}:${mesa.pos_y}`)
         .sort()
         .join("|"),
     [mesas],
   );
-  const bounds = useMemo(() => getEventBounds(mesas), [mesas]);
   const titleFootprint = useMemo(
     () => getEventTitleFootprint(evento.nombre, ROOM_LAYOUT_WIDTH, ROOM_LAYOUT_HEIGHT),
     [evento.nombre],
   );
   const protectedBounds = useMemo(
-    () => getProtectedBounds(bounds, titleFootprint),
-    [bounds, titleFootprint],
+    () => getProtectedEventBounds(mesas, evento.nombre),
+    [evento.nombre, mesas],
   );
   const computedFrame = useMemo(
-    () => getProtectedPlanFrame(protectedBounds),
-    [protectedBounds],
+    () => getProtectedCenteredPlanFrame(mesas, evento.nombre),
+    [evento.nombre, mesas],
   );
   const [sceneFrame, setSceneFrame] = useState<PlanFrame>(computedFrame);
   const centerX = sceneFrame.centerX;

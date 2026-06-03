@@ -6,10 +6,10 @@ import { EventoSala, Silla, normalizeReservas } from "@/lib/dinner-room";
 import {
   ROOM_LAYOUT_HEIGHT,
   ROOM_LAYOUT_WIDTH,
-  getEventBounds,
   PlanFrame,
   getEventTitleFootprint,
-  getPlanFrame,
+  getProtectedCenteredPlanFrame,
+  getProtectedEventBounds,
   getTableDimensions,
   getRectangleChairSlots,
 } from "@/lib/room-layout";
@@ -116,18 +116,24 @@ export default function DinnerRoomPlan2D({
   const structureSignature = useMemo(
     () =>
       mesas
-        .map((mesa) => `${mesa.numero}:${mesa.sillas.length}`)
+        .map((mesa) => `${mesa.numero}:${mesa.sillas.length}:${mesa.pos_x}:${mesa.pos_y}`)
         .sort()
         .join("|"),
     [mesas],
   );
-  const bounds = useMemo(() => getEventBounds(mesas), [mesas]);
-  const computedFrame = useMemo(() => getPlanFrame(mesas), [mesas]);
+  const protectedBounds = useMemo(
+    () => getProtectedEventBounds(mesas, evento.nombre),
+    [evento.nombre, mesas],
+  );
   const titleFootprint = useMemo(
     () => getEventTitleFootprint(evento.nombre, ROOM_LAYOUT_WIDTH, ROOM_LAYOUT_HEIGHT),
     [evento.nombre],
   );
-  const [sceneFrame, setSceneFrame] = useState<PlanFrame>(computedFrame);
+  const protectedFrame = useMemo(
+    () => getProtectedCenteredPlanFrame(mesas, evento.nombre),
+    [evento.nombre, mesas],
+  );
+  const [sceneFrame, setSceneFrame] = useState<PlanFrame>(protectedFrame);
   const centerX = sceneFrame.centerX;
   const centerY = sceneFrame.centerY;
   const [zoom, setZoom] = useState(0.9);
@@ -143,18 +149,18 @@ export default function DinnerRoomPlan2D({
       previousStructureSignatureRef.current !== structureSignature;
 
     if (eventChanged || structureChanged) {
-      setSceneFrame(computedFrame);
+      setSceneFrame(protectedFrame);
       hasInitializedRef.current = false;
       previousEventIdRef.current = evento.id;
       previousStructureSignatureRef.current = structureSignature;
     }
-  }, [computedFrame, evento.id, structureSignature]);
+  }, [evento.id, protectedFrame, structureSignature]);
 
   useEffect(() => {
     const fitZoom = clamp(
       Math.min(
-        (sceneFrame.width * 0.84) / Math.max(bounds.width + 180, 520),
-        (sceneFrame.height * 0.84) / Math.max(bounds.height + 180, 360),
+        (sceneFrame.width * 0.84) / Math.max(protectedBounds.width + 180, 520),
+        (sceneFrame.height * 0.84) / Math.max(protectedBounds.height + 180, 360),
       ),
       0.72,
       1.38,
@@ -168,8 +174,8 @@ export default function DinnerRoomPlan2D({
     setPan(
       clampPan(
         {
-          x: fitZoom * (centerX - bounds.centerX),
-          y: fitZoom * (centerY - bounds.centerY),
+          x: 0,
+          y: 0,
         },
         fitZoom,
         sceneFrame.width,
@@ -177,7 +183,7 @@ export default function DinnerRoomPlan2D({
       ),
     );
     hasInitializedRef.current = true;
-  }, [bounds.centerX, bounds.centerY, bounds.height, bounds.width, centerX, centerY, mesas.length, sceneFrame.height, sceneFrame.width]);
+  }, [mesas.length, protectedBounds.height, protectedBounds.width, sceneFrame.height, sceneFrame.width]);
 
   useEffect(() => {
     const viewportElement = viewportRef.current;
@@ -355,8 +361,8 @@ export default function DinnerRoomPlan2D({
   function resetView() {
     const fitZoom = clamp(
       Math.min(
-        (sceneFrame.width * 0.84) / Math.max(bounds.width + 180, 520),
-        (sceneFrame.height * 0.84) / Math.max(bounds.height + 180, 360),
+        (sceneFrame.width * 0.84) / Math.max(protectedBounds.width + 180, 520),
+        (sceneFrame.height * 0.84) / Math.max(protectedBounds.height + 180, 360),
       ),
       0.72,
       1.38,
@@ -366,8 +372,8 @@ export default function DinnerRoomPlan2D({
     setPan(
       clampPan(
         {
-          x: fitZoom * (centerX - bounds.centerX),
-          y: fitZoom * (centerY - bounds.centerY),
+          x: 0,
+          y: 0,
         },
         fitZoom,
         sceneFrame.width,

@@ -58,6 +58,8 @@ export type ProtectedTitleRect = {
   height: number;
 };
 
+export type ProtectedBounds = EventBounds;
+
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(value, max));
 }
@@ -264,6 +266,35 @@ export function getProtectedTitleRect(
     y: roomHeight / 2 - footprint.safeHeight / 2,
     width: footprint.safeWidth,
     height: footprint.safeHeight,
+  };
+}
+
+export function getProtectedEventBounds(
+  mesas: Array<{ pos_x: number; pos_y: number; sillas: Array<unknown> }>,
+  eventName: string,
+  roomWidth: number = ROOM_LAYOUT_WIDTH,
+  roomHeight: number = ROOM_LAYOUT_HEIGHT,
+): ProtectedBounds {
+  const bounds = getEventBounds(mesas);
+  const footprint = getEventTitleFootprint(eventName, roomWidth, roomHeight);
+  const titleMinX = roomWidth / 2 - footprint.safeWidth / 2;
+  const titleMaxX = roomWidth / 2 + footprint.safeWidth / 2;
+  const titleMinY = roomHeight / 2 - footprint.safeHeight / 2;
+  const titleMaxY = roomHeight / 2 + footprint.safeHeight / 2;
+  const minX = Math.min(bounds.minX, titleMinX);
+  const maxX = Math.max(bounds.maxX, titleMaxX);
+  const minY = Math.min(bounds.minY, titleMinY);
+  const maxY = Math.max(bounds.maxY, titleMaxY);
+
+  return {
+    minX,
+    maxX,
+    minY,
+    maxY,
+    width: maxX - minX,
+    height: maxY - minY,
+    centerX: (minX + maxX) / 2,
+    centerY: (minY + maxY) / 2,
   };
 }
 
@@ -513,6 +544,45 @@ export function getCenteredPlanFrame(
   mesas: Array<{ pos_x: number; pos_y: number; sillas: Array<unknown> }>,
 ): PlanFrame {
   const bounds = getEventBounds(mesas);
+  const horizontalPadding = 150;
+  const topPadding = 190;
+  const bottomPadding = 120;
+  const minWidth = 900;
+  const minHeight = 700;
+  const roomCenterX = ROOM_LAYOUT_WIDTH / 2;
+  const roomCenterY = ROOM_LAYOUT_HEIGHT / 2;
+  const halfWidth = Math.min(
+    ROOM_LAYOUT_WIDTH / 2,
+    Math.max(
+      minWidth / 2,
+      roomCenterX - bounds.minX + horizontalPadding,
+      bounds.maxX - roomCenterX + horizontalPadding,
+    ),
+  );
+  const halfHeight = Math.min(
+    ROOM_LAYOUT_HEIGHT / 2,
+    Math.max(
+      minHeight / 2,
+      roomCenterY - bounds.minY + topPadding,
+      bounds.maxY - roomCenterY + bottomPadding,
+    ),
+  );
+
+  return {
+    minX: roomCenterX - halfWidth,
+    minY: roomCenterY - halfHeight,
+    width: halfWidth * 2,
+    height: halfHeight * 2,
+    centerX: roomCenterX,
+    centerY: roomCenterY,
+  };
+}
+
+export function getProtectedCenteredPlanFrame(
+  mesas: Array<{ pos_x: number; pos_y: number; sillas: Array<unknown> }>,
+  eventName: string,
+): PlanFrame {
+  const bounds = getProtectedEventBounds(mesas, eventName);
   const horizontalPadding = 150;
   const topPadding = 190;
   const bottomPadding = 120;

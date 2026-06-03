@@ -14,7 +14,7 @@ import {
   ROOM_LAYOUT_WIDTH,
   ROOM_WORLD_SCALE,
   getEventTitleFootprint,
-  getEventBounds,
+  getProtectedEventBounds,
   roomPointToWorld,
 } from "@/lib/room-layout";
 
@@ -48,31 +48,6 @@ function browserSupportsWebGL() {
   } catch {
     return false;
   }
-}
-
-function getProtectedBounds(
-  bounds: ReturnType<typeof getEventBounds>,
-  footprint: ReturnType<typeof getEventTitleFootprint>,
-) {
-  const titleMinX = ROOM_LAYOUT_WIDTH / 2 - footprint.safeWidth / 2;
-  const titleMaxX = ROOM_LAYOUT_WIDTH / 2 + footprint.safeWidth / 2;
-  const titleMinY = ROOM_LAYOUT_HEIGHT / 2 - footprint.safeHeight / 2;
-  const titleMaxY = ROOM_LAYOUT_HEIGHT / 2 + footprint.safeHeight / 2;
-  const minX = Math.min(bounds.minX, titleMinX);
-  const maxX = Math.max(bounds.maxX, titleMaxX);
-  const minY = Math.min(bounds.minY, titleMinY);
-  const maxY = Math.max(bounds.maxY, titleMaxY);
-
-  return {
-    minX,
-    maxX,
-    minY,
-    maxY,
-    width: maxX - minX,
-    height: maxY - minY,
-    centerX: (minX + maxX) / 2,
-    centerY: (minY + maxY) / 2,
-  };
 }
 
 function EventLabel({
@@ -125,16 +100,15 @@ function SceneContent(props: DinnerRoomSceneLegacyProps) {
   const structureSignature = useMemo(
     () =>
       mesas
-        .map((mesa) => `${mesa.numero}:${mesa.sillas.length}`)
+        .map((mesa) => `${mesa.numero}:${mesa.sillas.length}:${mesa.pos_x}:${mesa.pos_y}`)
         .sort()
         .join("|"),
     [mesas],
   );
-  const bounds = useMemo(() => getEventBounds(mesas), [mesas]);
   const titleFootprint = useMemo(() => getEventTitleFootprint(props.evento.nombre), [props.evento.nombre]);
   const protectedBounds = useMemo(
-    () => getProtectedBounds(bounds, titleFootprint),
-    [bounds, titleFootprint],
+    () => getProtectedEventBounds(mesas, props.evento.nombre),
+    [mesas, props.evento.nombre],
   );
   const roomWorldWidth = ROOM_LAYOUT_WIDTH * ROOM_WORLD_SCALE;
   const roomWorldDepth = ROOM_LAYOUT_HEIGHT * ROOM_WORLD_SCALE;

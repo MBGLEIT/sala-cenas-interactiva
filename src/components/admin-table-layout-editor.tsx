@@ -7,9 +7,9 @@ import {
   ROOM_LAYOUT_HEIGHT,
   ROOM_LAYOUT_WIDTH,
   doesTableOverlapProtectedTitle,
-  getEventBounds,
-  getCenteredPlanFrame,
+  getProtectedEventBounds,
   getProtectedTitleRect,
+  getProtectedCenteredPlanFrame,
   PlanFrame,
   getTableDimensions,
   getRectangleChairSlots,
@@ -110,13 +110,13 @@ export default function AdminTableLayoutEditor({
   const [positions, setPositions] = useState<Record<string, Position>>({});
   const hasInitializedRef = useRef(false);
   const structureSignature = mesas
-    .map((mesa) => `${mesa.numero}:${mesa.sillas.length}`)
+    .map((mesa) => `${mesa.numero}:${mesa.sillas.length}:${mesa.pos_x}:${mesa.pos_y}`)
     .sort()
     .join("|");
   const previousStructureSignatureRef = useRef(structureSignature);
 
-  const bounds = getEventBounds(mesas);
-  const computedFrame = getCenteredPlanFrame(mesas);
+  const protectedBounds = getProtectedEventBounds(mesas, eventName);
+  const computedFrame = getProtectedCenteredPlanFrame(mesas, eventName);
   const protectedTitleRect = getProtectedTitleRect(eventName);
   const [sceneFrame, setSceneFrame] = useState<PlanFrame>(computedFrame);
   const centerX = sceneFrame.centerX;
@@ -154,8 +154,8 @@ export default function AdminTableLayoutEditor({
 
     const fitZoom = clamp(
       Math.min(
-        (sceneFrame.width * 0.84) / Math.max(bounds.width + 180, 520),
-        (sceneFrame.height * 0.84) / Math.max(bounds.height + 180, 360),
+        (sceneFrame.width * 0.84) / Math.max(protectedBounds.width + 180, 520),
+        (sceneFrame.height * 0.84) / Math.max(protectedBounds.height + 180, 360),
       ),
       0.68,
       1.2,
@@ -178,7 +178,7 @@ export default function AdminTableLayoutEditor({
       ),
     );
     hasInitializedRef.current = true;
-  }, [draggingMesa, draggingView, mesas.length, sceneFrame.height, sceneFrame.width, bounds.height, bounds.width]);
+  }, [draggingMesa, draggingView, mesas.length, protectedBounds.height, protectedBounds.width, sceneFrame.height, sceneFrame.width]);
 
   useEffect(() => {
     function handleFullscreenChange() {

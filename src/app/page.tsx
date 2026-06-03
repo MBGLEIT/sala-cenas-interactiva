@@ -397,6 +397,9 @@ export default function Home() {
   }
 
   function goToPresencialWait(message?: unknown) {
+    if (typeof document !== "undefined" && !document.fullscreenElement) {
+      void document.documentElement.requestFullscreen().catch(() => undefined);
+    }
     setAccessMode("presencial");
     setScreen("presencial-wait");
     setError("");
@@ -467,6 +470,16 @@ export default function Home() {
       window.cancelAnimationFrame(frameId);
       window.clearTimeout(timeoutId);
     };
+  }, [screen]);
+
+  useEffect(() => {
+    if (screen !== "presencial-wait" || typeof document === "undefined") {
+      return;
+    }
+
+    if (!document.fullscreenElement) {
+      void document.documentElement.requestFullscreen().catch(() => undefined);
+    }
   }, [screen]);
 
   useEffect(() => {
@@ -891,7 +904,7 @@ export default function Home() {
 
   const presencialRoomOverlay = evento && asistente ? (
     <>
-      <div className="pointer-events-auto absolute left-4 top-4 max-w-md rounded-[28px] border border-stone-200 bg-white/94 px-5 py-4 shadow-sm backdrop-blur">
+      <div className="pointer-events-auto absolute left-3 right-3 top-3 max-w-sm rounded-[28px] border border-stone-200 bg-white/94 px-4 py-4 shadow-sm backdrop-blur sm:left-4 sm:right-auto sm:top-4 sm:px-5">
         <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-700">
           Reserva presencial
         </p>
@@ -923,8 +936,8 @@ export default function Home() {
       !reservaActual &&
       !showReservationSummary &&
       !showReservationQuestionnaire ? (
-        <div className="pointer-events-auto absolute bottom-6 right-6 flex flex-col items-end gap-3">
-          <div className="max-w-sm rounded-3xl border border-amber-300 bg-[linear-gradient(180deg,_#fff8db,_#fff1b8)] px-5 py-4 text-right shadow-sm">
+        <div className="pointer-events-auto absolute bottom-4 left-1/2 flex w-[min(92vw,26rem)] -translate-x-1/2 flex-col items-stretch gap-3 sm:bottom-6 sm:left-auto sm:right-6 sm:w-auto sm:translate-x-0 sm:items-end">
+          <div className="rounded-3xl border border-amber-300 bg-[linear-gradient(180deg,_#fff8db,_#fff1b8)] px-5 py-4 text-left shadow-sm sm:max-w-sm sm:text-right">
             <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-800">
               Seleccion actual
             </p>
@@ -943,7 +956,7 @@ export default function Home() {
       ) : null}
 
       {!selectedSillaId && !reservaActual ? (
-        <div className="pointer-events-auto absolute bottom-6 right-6 max-w-sm rounded-[28px] border border-stone-200 bg-white/94 px-5 py-4 shadow-sm backdrop-blur">
+        <div className="pointer-events-auto absolute bottom-4 left-1/2 w-[min(92vw,24rem)] -translate-x-1/2 rounded-[28px] border border-stone-200 bg-white/94 px-5 py-4 shadow-sm backdrop-blur sm:bottom-6 sm:left-auto sm:right-6 sm:w-auto sm:translate-x-0 sm:max-w-sm">
           <p className="text-sm font-semibold uppercase tracking-[0.18em] text-stone-500">
             Elige una silla
           </p>
@@ -954,7 +967,7 @@ export default function Home() {
       ) : null}
 
       {reservaActual ? (
-        <div className="pointer-events-auto absolute bottom-6 right-6 max-w-sm rounded-[28px] border border-sky-200 bg-white/94 px-5 py-4 shadow-sm backdrop-blur">
+        <div className="pointer-events-auto absolute bottom-4 left-1/2 w-[min(92vw,24rem)] -translate-x-1/2 rounded-[28px] border border-sky-200 bg-white/94 px-5 py-4 shadow-sm backdrop-blur sm:bottom-6 sm:left-auto sm:right-6 sm:w-auto sm:translate-x-0 sm:max-w-sm">
           <p className="text-sm font-semibold uppercase tracking-[0.18em] text-sky-700">
             Reserva existente
           </p>
@@ -1036,8 +1049,12 @@ export default function Home() {
 
   return (
     <main
-      className={`min-h-screen bg-[radial-gradient(circle_at_top,_#fff7ed,_#f5f5f4_55%,_#e7e5e4)] text-stone-900 ${
-        accessMode === "movil" ? "px-6 py-12" : "px-4 py-6 sm:px-6 sm:py-12"
+      className={`bg-[radial-gradient(circle_at_top,_#fff7ed,_#f5f5f4_55%,_#e7e5e4)] text-stone-900 ${
+        screen === "presencial-wait"
+          ? "h-screen overflow-hidden px-0 py-0"
+          : accessMode === "movil"
+            ? "min-h-screen px-6 py-12"
+            : "min-h-screen px-4 py-6 sm:px-6 sm:py-12"
       }`}
     >
       <ToastStack toasts={toasts} onDismiss={dismissToast} />
@@ -1142,7 +1159,7 @@ export default function Home() {
       ) : null}
 
       {screen === "presencial-wait" ? (
-        <section className="mx-auto flex min-h-[calc(100vh-3rem)] w-full max-w-6xl flex-col overflow-hidden rounded-[40px] border border-stone-800 bg-[linear-gradient(180deg,_#1c1917_0%,_#292524_48%,_#44403c_100%)] shadow-[0_30px_90px_rgba(28,25,23,0.3)]">
+        <section className="mx-auto flex h-full min-h-screen w-full max-w-none flex-col overflow-hidden rounded-none border-0 border-stone-800 bg-[linear-gradient(180deg,_#1c1917_0%,_#292524_48%,_#44403c_100%)] shadow-none">
           <input
             ref={scannerInputRef}
             id="scanner-identificador"
