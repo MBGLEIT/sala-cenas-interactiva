@@ -30,6 +30,18 @@ const DinnerRoomScene = dynamic(
   },
 );
 
+const DinnerRoomSceneLegacy = dynamic(
+  () => import("@/components/dinner-room-scene-legacy"),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="rounded-[28px] border border-stone-200 bg-stone-50 px-6 py-10 text-stone-500">
+        Preparando la sala...
+      </div>
+    ),
+  },
+);
+
 type AccessMode = "presencial" | "movil" | null;
 type PublicScreen =
   | "home"
@@ -1332,7 +1344,7 @@ export default function Home() {
 
             <section className="rounded-[36px] border border-stone-200 bg-white px-8 py-8 shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-10">
               <div className="mt-2">
-                <DinnerRoomScene
+                <DinnerRoomSceneLegacy
                   evento={evento}
                   selectedSillaId={selectedSillaId}
                   currentAsistenteId={asistente.id}
