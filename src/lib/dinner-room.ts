@@ -5,6 +5,7 @@ export type AsistenteEncontrado = {
   nombre: string;
   identificador: string;
   evento_id: string;
+  qr_reserva_token?: string | null;
 };
 
 export type Reserva = {

@@ -25,12 +25,15 @@ export const crearReservaSchema = z.object({
     .default(""),
 });
 
-export const buscarAsistenteSchema = z.object({
-  identificador: z
-    .string()
-    .trim()
-    .min(3, "El identificador debe tener al menos 3 caracteres"),
-});
+export const buscarAsistenteSchema = z
+  .object({
+    identificador: z.string().trim().min(3).optional(),
+    codigo: z.string().trim().min(3).optional(),
+  })
+  .refine(
+    (value) => Boolean(value.identificador || value.codigo),
+    "Debes enviar un identificador o un codigo QR valido",
+  );
 
 export const adminLoginSchema = z.object({
   password: z
@@ -136,6 +139,7 @@ export const adminCreateAsistenteSchema = z.object({
     .string()
     .trim()
     .min(3, "El identificador debe tener al menos 3 caracteres"),
+  qrReservaToken: z.string().trim().min(3).optional().or(z.literal("")),
 });
 
 export const adminUpdateAsistenteSchema = z.object({
@@ -148,6 +152,11 @@ export const adminUpdateAsistenteSchema = z.object({
     .string()
     .trim()
     .min(3, "El identificador debe tener al menos 3 caracteres"),
+  qrReservaToken: z.string().trim().min(3).optional().or(z.literal("")),
+});
+
+export const eliminarReservaPublicaSchema = z.object({
+  asistenteId: uuidLikeSchema,
 });
 
 export const adminDeleteAsistenteSchema = z.object({

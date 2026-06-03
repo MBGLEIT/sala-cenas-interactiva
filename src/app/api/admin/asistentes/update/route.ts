@@ -25,20 +25,21 @@ export async function POST(request: Request) {
     );
   }
 
-  const { asistenteId, nombre, identificador } = parsedBody.data;
+  const { asistenteId, nombre, identificador, qrReservaToken } = parsedBody.data;
 
   const { error } = await supabaseAdmin
     .from("asistentes")
     .update({
       nombre,
       identificador: identificador.toUpperCase(),
+      qr_reserva_token: qrReservaToken?.trim() ? qrReservaToken.trim().toUpperCase() : null,
     })
     .eq("id", asistenteId);
 
   if (error) {
     if (error.code === "23505") {
       return NextResponse.json(
-        { error: "Ya existe un asistente con ese identificador." },
+        { error: "Ya existe un asistente con ese identificador o QR de reserva." },
         { status: 409 },
       );
     }

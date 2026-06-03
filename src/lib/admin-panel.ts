@@ -19,6 +19,7 @@ export type AdminAssistantRow = {
   id: string;
   nombre: string;
   identificador: string;
+  qrReservaToken: string | null;
   reservaActual: {
     reservaId: string;
     sillaId: string;
@@ -79,7 +80,7 @@ export async function fetchAdminPanelData(eventoId: string): Promise<AdminPanelD
         .maybeSingle(),
       supabaseAdmin
         .from("asistentes")
-        .select("id, nombre, identificador")
+        .select("id, nombre, identificador, qr_reserva_token")
         .eq("evento_id", eventoId)
         .order("nombre", { ascending: true }),
     ]);
@@ -101,6 +102,7 @@ export async function fetchAdminPanelData(eventoId: string): Promise<AdminPanelD
     id: string;
     nombre: string;
     identificador: string;
+    qr_reserva_token: string | null;
   }[];
 
   const reservas: AdminReservationRow[] = [];
@@ -131,6 +133,7 @@ export async function fetchAdminPanelData(eventoId: string): Promise<AdminPanelD
 
   const asistentes = asistentesBase.map((asistente) => ({
     ...asistente,
+    qrReservaToken: asistente.qr_reserva_token,
     reservaActual: reservaPorAsistente.get(asistente.id) ?? null,
   }));
 

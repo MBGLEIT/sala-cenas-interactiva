@@ -273,9 +273,11 @@ export default function AdminDashboard({
 
   const [asistenteNombre, setAsistenteNombre] = useState("");
   const [asistenteIdentificador, setAsistenteIdentificador] = useState("");
+  const [asistenteQrReservaToken, setAsistenteQrReservaToken] = useState("");
   const [asistenteEditId, setAsistenteEditId] = useState("");
   const [asistenteEditNombre, setAsistenteEditNombre] = useState("");
   const [asistenteEditIdentificador, setAsistenteEditIdentificador] = useState("");
+  const [asistenteEditQrReservaToken, setAsistenteEditQrReservaToken] = useState("");
 
   const [mesaNumero, setMesaNumero] = useState("1");
   const [mesaBatchQuantity, setMesaBatchQuantity] = useState("1");
@@ -679,6 +681,7 @@ export default function AdminDashboard({
     setAsistenteEditId(firstAsistente?.id ?? "");
     setAsistenteEditNombre(firstAsistente?.nombre ?? "");
     setAsistenteEditIdentificador(firstAsistente?.identificador ?? "");
+    setAsistenteEditQrReservaToken(firstAsistente?.qrReservaToken ?? "");
 
     setSillaSeleccionadaId(firstSillaDisponible?.sillaId ?? "");
     setSillaEditId(firstChair?.id ?? "");
@@ -703,6 +706,7 @@ export default function AdminDashboard({
 
     setAsistenteEditNombre(asistenteEditActual.nombre);
     setAsistenteEditIdentificador(asistenteEditActual.identificador);
+    setAsistenteEditQrReservaToken(asistenteEditActual.qrReservaToken ?? "");
   }, [asistenteEditActual]);
 
   useEffect(() => {
@@ -859,6 +863,7 @@ export default function AdminDashboard({
         eventoId: selectedEventId,
         nombre: asistenteNombre,
         identificador: asistenteIdentificador,
+        qrReservaToken: asistenteQrReservaToken,
       },
       "Asistente creado",
     );
@@ -866,6 +871,7 @@ export default function AdminDashboard({
     if (created) {
       setAsistenteNombre("");
       setAsistenteIdentificador("");
+      setAsistenteQrReservaToken("");
     }
   }
 
@@ -882,6 +888,7 @@ export default function AdminDashboard({
         asistenteId: asistenteEditId,
         nombre: asistenteEditNombre,
         identificador: asistenteEditIdentificador,
+        qrReservaToken: asistenteEditQrReservaToken,
       },
       "Asistente actualizado",
     );
@@ -1936,6 +1943,20 @@ export default function AdminDashboard({
                     className={`${FieldInputClass(!asistenteEditId)} uppercase tracking-[0.08em]`}
                   />
                 </AdminField>
+                <AdminField
+                  label="QR de reserva presencial"
+                  hint="Token que devolvera el lector QR para esta persona."
+                >
+                  <input
+                    type="text"
+                    value={asistenteEditQrReservaToken}
+                    onChange={(event) =>
+                      setAsistenteEditQrReservaToken(event.target.value.toUpperCase())
+                    }
+                    disabled={!asistenteEditId}
+                    className={`${FieldInputClass(!asistenteEditId)} uppercase tracking-[0.08em]`}
+                  />
+                </AdminField>
                 <div className="flex flex-wrap gap-3">
                   <button
                     type="submit"
@@ -1983,6 +2004,21 @@ export default function AdminDashboard({
                       setAsistenteIdentificador(event.target.value.toUpperCase())
                     }
                     placeholder="Codigo del asistente"
+                    disabled={!selectedEventId}
+                    className={`${FieldInputClass(!selectedEventId)} uppercase tracking-[0.08em]`}
+                  />
+                </AdminField>
+                <AdminField
+                  label="QR de reserva presencial"
+                  hint="Opcional. Si lo rellenas, el lector QR buscara por este valor."
+                >
+                  <input
+                    type="text"
+                    value={asistenteQrReservaToken}
+                    onChange={(event) =>
+                      setAsistenteQrReservaToken(event.target.value.toUpperCase())
+                    }
+                    placeholder="Token o codigo QR dedicado"
                     disabled={!selectedEventId}
                     className={`${FieldInputClass(!selectedEventId)} uppercase tracking-[0.08em]`}
                   />

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { crearReservaSchema } from "@/lib/schemas";
+import { crearReservaSchema, eliminarReservaPublicaSchema } from "@/lib/schemas";
 import { supabase } from "@/lib/supabase";
 
 export async function POST(request: Request) {
@@ -156,4 +156,45 @@ export async function POST(request: Request) {
     },
     { status: 201 },
   );
+}
+
+export async function DELETE(request: Request) {
+  const body = await request.json().catch(() => null);
+  const parsedBody = eliminarReservaPublicaSchema.safeParse(body);
+
+  if (!parsedBody.success) {
+    return NextResponse.json(
+      {
+        error: "El asistente indicado no es valido",
+        details: parsedBody.error.flatten(),
+      },
+      { status: 400 },
+    );
+  }
+
+  const { asistenteId } = parsedBody.data;
+  const { data, error } = await supabase
+    .from("reservas")
+    .delete()
+    .eq("asistente_id", asistenteId)
+    .select("id")
+    .maybeSingle();
+
+  if (error) {
+    return NextResponse.json(
+      { error: "No se pudo eliminar la reserva actual", details: error.message },
+      { status: 500 },
+    );
+  }
+
+  if (!data) {
+    return NextResponse.json(
+      { error: "El asistente no tenia una reserva activa" },
+      { status: 404 },
+    );
+  }
+
+  return NextResponse.json({
+    message: "Reserva eliminada correctamente.",
+  });
 }

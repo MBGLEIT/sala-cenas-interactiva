@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import ToastStack, { ToastItem } from "@/components/toast-stack";
 import {
@@ -10,6 +10,7 @@ import {
   EVENTO_SALA_SELECT,
   EventoQueryResult,
   EventoSala,
+  ReservaActual,
   RealtimeReservaPayload,
   applyOptimisticReservation,
   findReservaActual,
@@ -53,6 +54,12 @@ type PublicScreen =
 type IdentityCandidate = {
   asistente: AsistenteEncontrado;
   evento: EventoSala;
+};
+
+type ExistingReservationPrompt = {
+  asistente: AsistenteEncontrado;
+  evento: EventoSala;
+  reserva: ReservaActual;
 };
 
 async function fetchEventoSala(eventoId: string): Promise<EventoSala> {
@@ -335,6 +342,8 @@ export default function Home() {
   const [asistente, setAsistente] = useState<AsistenteEncontrado | null>(null);
   const [evento, setEvento] = useState<EventoSala | null>(null);
   const [identityCandidate, setIdentityCandidate] = useState<IdentityCandidate | null>(null);
+  const [existingReservationPrompt, setExistingReservationPrompt] =
+    useState<ExistingReservationPrompt | null>(null);
   const [selectedSillaId, setSelectedSillaId] = useState<string | null>(null);
   const [showReservationSummary, setShowReservationSummary] = useState(false);
   const [showReservationQuestionnaire, setShowReservationQuestionnaire] = useState(false);
@@ -362,10 +371,10 @@ export default function Home() {
     setToasts((currentToasts) => currentToasts.filter((toast) => toast.id !== id));
   }
 
-  function pushToast(toast: Omit<ToastItem, "id">) {
+  const pushToast = useCallback((toast: Omit<ToastItem, "id">) => {
     const id = `${toast.tone}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setToasts((currentToasts) => [...currentToasts.slice(-2), { id, ...toast }]);
-  }
+  }, []);
 
   function resetReservationForm() {
     setSelectedSillaId(null);
@@ -381,6 +390,7 @@ export default function Home() {
     setAsistente(null);
     setEvento(null);
     setIdentityCandidate(null);
+    setExistingReservationPrompt(null);
     setRealtimeConnected(false);
     resetReservationForm();
   }
@@ -595,12 +605,13 @@ export default function Home() {
       setRealtimeConnected(false);
       void supabase.removeChannel(channel);
     };
-  }, [evento?.id, asistente?.id]);
+  }, [evento?.id, asistente?.id, pushToast]);
 
-  async function identifyAssistantByIdentifier(
+  const identifyAssistantByIdentifier = useCallback(async (
     rawIdentifier: string,
     mode: "presencial" | "movil",
-  ) {
+    lookupSource: "identificador" | "codigo" = "identificador",
+  ) => {
     const cleanIdentifier = rawIdentifier.trim().toUpperCase();
 
     if (!cleanIdentifier) {
@@ -618,10 +629,15 @@ export default function Home() {
     setError("");
     setInfoMessage("");
     setIdentityCandidate(null);
+    setExistingReservationPrompt(null);
 
     try {
+      const searchQuery =
+        lookupSource === "codigo"
+          ? `codigo=${encodeURIComponent(cleanIdentifier)}`
+          : `identificador=${encodeURIComponent(cleanIdentifier)}`;
       const response = await fetch(
-        `/api/asistentes?identificador=${encodeURIComponent(cleanIdentifier)}&ts=${Date.now()}`,
+        `/api/asistentes?${searchQuery}&ts=${Date.now()}`,
         { cache: "no-store" },
       );
 
@@ -643,14 +659,25 @@ export default function Home() {
       }
 
       const eventoCargado = await cargarEvento(result.asistente.evento_id);
+      const reservaActualDetectada = findReservaActual(eventoCargado, result.asistente.id);
 
       if (mode === "presencial") {
-        setIdentityCandidate({
-          asistente: result.asistente,
-          evento: eventoCargado,
-        });
-        setShowManualFallback(false);
-        setInfoMessage("Asistente encontrado. Confirma la identidad antes de continuar.");
+        if (reservaActualDetectada) {
+          setExistingReservationPrompt({
+            asistente: result.asistente,
+            evento: eventoCargado,
+            reserva: reservaActualDetectada,
+          });
+          setShowManualFallback(false);
+          setInfoMessage("Este asistente ya tiene una reserva activa.");
+        } else {
+          setIdentityCandidate({
+            asistente: result.asistente,
+            evento: eventoCargado,
+          });
+          setShowManualFallback(false);
+          setInfoMessage("Asistente encontrado. Confirma la identidad antes de continuar.");
+        }
       } else {
         setAsistente(result.asistente);
         setEvento(eventoCargado);
@@ -679,7 +706,7 @@ export default function Home() {
     } finally {
       setLookupLoading(false);
     }
-  }
+  }, [pushToast]);
 
   async function handleMobileIdentifySubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -765,12 +792,46 @@ export default function Home() {
     await identifyAssistantByIdentifier(identificador, "presencial");
   }
 
-  async function handleScannerSubmit() {
+  const handleScannerSubmit = useCallback(async () => {
     if (lookupLoading || roomLoading) {
       return;
     }
-    await identifyAssistantByIdentifier(scannerValue, "presencial");
-  }
+    await identifyAssistantByIdentifier(scannerValue, "presencial", "codigo");
+  }, [identifyAssistantByIdentifier, lookupLoading, roomLoading, scannerValue]);
+
+  useEffect(() => {
+    if (
+      screen !== "presencial-wait" ||
+      lookupLoading ||
+      roomLoading ||
+      identityCandidate ||
+      existingReservationPrompt
+    ) {
+      return;
+    }
+
+    const pendingCode = scannerValue.trim();
+
+    if (pendingCode.length < 3) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void handleScannerSubmit();
+    }, 280);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [
+    existingReservationPrompt,
+    handleScannerSubmit,
+    identityCandidate,
+    lookupLoading,
+    roomLoading,
+    scannerValue,
+    screen,
+  ]);
 
   async function handleConfirmReservation() {
     if (!asistente || !selectedSillaId || !evento) {
@@ -878,6 +939,76 @@ export default function Home() {
     setInfoMessage("Introduce el codigo correcto del asistente.");
     setShowManualFallback(true);
     setScreen("presencial-manual");
+  }
+
+  async function handleEditExistingReservation() {
+    if (!existingReservationPrompt) {
+      return;
+    }
+
+    setReservationLoading(true);
+    setError("");
+    setInfoMessage("Eliminando la reserva anterior...");
+
+    try {
+      const response = await fetch("/api/reservas", {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          asistenteId: existingReservationPrompt.asistente.id,
+        }),
+      });
+
+      const result = (await response.json()) as {
+        error?: string;
+        message?: string;
+      };
+
+      if (!response.ok) {
+        const message =
+          result.error ?? "No se pudo eliminar la reserva anterior de este asistente.";
+        setError(message);
+        pushToast({
+          tone: "error",
+          title: "No se pudo editar la reserva",
+          description: message,
+        });
+        return;
+      }
+
+      const eventoActualizado = await cargarEvento(existingReservationPrompt.asistente.evento_id, {
+        silent: true,
+      });
+      setAsistente(existingReservationPrompt.asistente);
+      setEvento(eventoActualizado);
+      setExistingReservationPrompt(null);
+      setScreen("room");
+      setScannerValue("");
+      setShowManualFallback(false);
+      setInfoMessage("Reserva anterior eliminada. Elige una silla nueva.");
+      pushToast({
+        tone: "success",
+        title: "Reserva desbloqueada",
+        description: result.message ?? "Ya puedes escoger una nueva silla.",
+      });
+    } catch {
+      setError("No se pudo eliminar la reserva anterior en este momento.");
+      pushToast({
+        tone: "error",
+        title: "No se pudo editar la reserva",
+        description: "Intentalo de nuevo en unos segundos.",
+      });
+    } finally {
+      setReservationLoading(false);
+    }
+  }
+
+  function cancelExistingReservationPrompt() {
+    setExistingReservationPrompt(null);
+    setScannerValue("");
+    goToPresencialWait();
   }
 
   function openReservationSummary() {
@@ -1356,6 +1487,44 @@ export default function Home() {
               className="inline-flex min-h-14 items-center justify-center rounded-full bg-emerald-600 px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-emerald-700"
             >
               Continuar
+            </button>
+          </div>
+        </OverlayModal>
+      ) : null}
+
+      {existingReservationPrompt ? (
+        <OverlayModal
+          title="Quiere editar su reserva?"
+          description={`Este QR corresponde a ${existingReservationPrompt.asistente.nombre} en el evento ${existingReservationPrompt.evento.nombre}.`}
+        >
+          <div className="rounded-[28px] border border-sky-200 bg-sky-50 px-5 py-5 text-stone-900">
+            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-sky-700">
+              Reserva actual
+            </p>
+            <p className="mt-3 text-2xl font-semibold tracking-tight">
+              Mesa {existingReservationPrompt.reserva.mesaNumero}, Silla{" "}
+              {existingReservationPrompt.reserva.sillaNumero}
+            </p>
+            <p className="mt-2 text-base leading-7 text-stone-700">
+              Si continuas, la reserva actual se eliminara antes de elegir una nueva silla.
+            </p>
+          </div>
+
+          <div className="mt-6 flex items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={cancelExistingReservationPrompt}
+              className="inline-flex min-h-14 items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={handleEditExistingReservation}
+              disabled={reservationLoading}
+              className="inline-flex min-h-14 items-center justify-center rounded-full bg-emerald-600 px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-stone-300"
+            >
+              {reservationLoading ? "Editando..." : "Editar Reserva"}
             </button>
           </div>
         </OverlayModal>
