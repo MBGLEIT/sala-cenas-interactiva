@@ -1110,6 +1110,15 @@ export default function Home() {
     setScreen("presencial-manual");
   }
 
+  function rejectExistingReservationPrompt() {
+    setExistingReservationPrompt(null);
+    setIdentificador("");
+    setError("");
+    setInfoMessage("Introduce el codigo correcto del asistente.");
+    setShowManualFallback(true);
+    setScreen("presencial-manual");
+  }
+
   async function handleEditExistingReservation() {
     if (!existingReservationPrompt) {
       return;
@@ -1691,7 +1700,7 @@ export default function Home() {
           <div className="mt-6 flex items-center justify-between gap-3">
             <button
               type="button"
-              onClick={rejectIdentityCandidate}
+              onClick={rejectExistingReservationPrompt}
               className="inline-flex min-h-14 items-center justify-center rounded-full border border-amber-300 bg-amber-50 px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-amber-800 transition hover:border-amber-500 hover:bg-amber-100"
             >
               No soy yo
