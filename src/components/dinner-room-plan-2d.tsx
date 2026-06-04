@@ -590,7 +590,11 @@ export default function DinnerRoomPlan2D({
       </div>
 
       {touchMode ? (
-        <div className="pointer-events-none absolute bottom-4 right-4 flex flex-col gap-3">
+        <div
+          className={`pointer-events-none absolute bottom-4 flex flex-col gap-3 ${
+            hideHeader ? "left-4 right-auto" : "right-4 left-auto"
+          }`}
+        >
           <button
             type="button"
             onClick={() => adjustZoom("in")}
