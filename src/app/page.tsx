@@ -71,6 +71,20 @@ type ExistingReservationPrompt = {
   reserva: ReservaActual;
 };
 
+function isMobileOrTabletDevice() {
+  if (typeof navigator === "undefined") {
+    return false;
+  }
+
+  const userAgent = navigator.userAgent.toLowerCase();
+  const matchesMobileAgent =
+    /android|iphone|ipad|ipod|mobile|tablet|silk|kindle|playbook/.test(userAgent);
+  const isIPadDesktopMode =
+    navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
+
+  return matchesMobileAgent || isIPadDesktopMode;
+}
+
 async function fetchEventoSala(eventoId: string): Promise<EventoSala> {
   const { data, error } = await supabase
     .from("eventos")
@@ -418,6 +432,7 @@ export default function Home() {
   const [movilidadReducida, setMovilidadReducida] = useState(false);
   const [observacionesReserva, setObservacionesReserva] = useState("");
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const [isMobileTablet, setIsMobileTablet] = useState(false);
   const scannerInputRef = useRef<HTMLInputElement>(null);
   const scannerProcessingRef = useRef(false);
   const scannerStartedAtRef = useRef(0);
@@ -483,8 +498,13 @@ export default function Home() {
     () => findSelectedChairDetails(evento, selectedSillaId),
     [evento, selectedSillaId],
   );
+  const useTouchMobileFlow = accessMode === "movil" && isMobileTablet;
   const canConfirmSelection =
     Boolean(selectedSillaId && asistente && !reservationLoading && !reservaActual);
+
+  useEffect(() => {
+    setIsMobileTablet(isMobileOrTabletDevice());
+  }, []);
 
   function dismissToast(id: string) {
     setToasts((currentToasts) => currentToasts.filter((toast) => toast.id !== id));
@@ -1211,11 +1231,11 @@ export default function Home() {
     setShowReservationQuestionnaire(false);
   }
 
-  const presencialRoomOverlay = evento && asistente ? (
+  const guidedRoomOverlay = evento && asistente ? (
     <>
       <div className="pointer-events-auto absolute left-3 right-3 top-3 max-w-sm rounded-[28px] border border-stone-200 bg-white/94 px-4 py-4 shadow-sm backdrop-blur sm:left-4 sm:right-auto sm:top-4 sm:px-5">
         <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-700">
-          Reserva presencial
+          {accessMode === "presencial" ? "Reserva presencial" : "Reserva movil"}
         </p>
         <h2 className="mt-2 text-2xl font-semibold tracking-tight text-stone-950">
           {evento.nombre}
@@ -1238,6 +1258,17 @@ export default function Home() {
             />
           ) : null}
         </div>
+        {useTouchMobileFlow && reservaActual ? (
+          <div className="mt-4">
+            <button
+              type="button"
+              onClick={resetMobileFlow}
+              className="inline-flex min-h-12 items-center justify-center rounded-full border border-stone-300 bg-white px-5 py-3 text-xs font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+            >
+              Salir
+            </button>
+          </div>
+        ) : null}
       </div>
 
       {selectedSillaId &&
@@ -1350,6 +1381,8 @@ export default function Home() {
       className={`bg-[radial-gradient(circle_at_top,_#fff7ed,_#f5f5f4_55%,_#e7e5e4)] text-stone-900 ${
         screen === "presencial-wait"
           ? "h-screen overflow-hidden px-0 py-0"
+          : screen === "home"
+            ? "h-[100dvh] overflow-hidden px-4 py-4 sm:px-6 sm:py-6"
           : accessMode === "movil"
             ? "min-h-screen px-6 py-12"
             : "min-h-screen px-4 py-6 sm:px-6 sm:py-12"
@@ -1358,10 +1391,10 @@ export default function Home() {
       <ToastStack toasts={toasts} onDismiss={dismissToast} />
 
       {screen === "home" ? (
-        <div className="mx-auto flex min-h-[calc(100vh-3rem)] max-w-5xl flex-col">
+        <div className="mx-auto flex h-full max-w-5xl flex-col overflow-hidden">
           <div className="flex flex-1 items-center justify-center">
             <div className="w-full max-w-5xl">
-              <div className="mb-10 text-center">
+              <div className="mb-8 text-center">
                 <h1 className="text-4xl font-semibold tracking-[0.18em] text-stone-950 sm:text-5xl">
                   SALA DE CENAS
                 </h1>
@@ -1382,7 +1415,7 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="flex justify-center pb-2">
+          <div className="flex justify-center pt-4">
             <Link
               href="/admin"
               className="inline-flex min-h-12 items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-4 text-sm font-semibold uppercase tracking-[0.2em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
@@ -1725,7 +1758,7 @@ export default function Home() {
       ) : null}
 
       {screen === "room" && asistente && evento ? (
-        accessMode === "presencial" ? (
+        accessMode === "presencial" || useTouchMobileFlow ? (
           <div className="mx-auto max-w-[1800px] space-y-6">
             <section>
               <DinnerRoomScene
@@ -1734,7 +1767,7 @@ export default function Home() {
                 currentAsistenteId={asistente.id}
                 selectionLocked={Boolean(reservaActual) || reservationLoading}
                 onSelectSilla={setSelectedSillaId}
-                overlay={presencialRoomOverlay}
+                overlay={guidedRoomOverlay}
                 touchMode
                 defaultViewMode="2d"
                 fullscreenBehavior="locked"
@@ -1779,6 +1812,7 @@ export default function Home() {
                   currentAsistenteId={asistente.id}
                   selectionLocked={Boolean(reservaActual) || reservationLoading}
                   onSelectSilla={setSelectedSillaId}
+                  fullscreenEnabled={false}
                 />
               </div>
 

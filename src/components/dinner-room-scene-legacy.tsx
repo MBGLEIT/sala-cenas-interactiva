@@ -24,6 +24,7 @@ type DinnerRoomSceneLegacyProps = {
   currentAsistenteId: string;
   selectionLocked: boolean;
   onSelectSilla: (sillaId: string | null) => void;
+  fullscreenEnabled?: boolean;
 };
 
 type ViewMode = "3d" | "2d";
@@ -389,15 +390,17 @@ export default function DinnerRoomSceneLegacy(props: DinnerRoomSceneLegacyProps)
           </p>
         </div>
 
-        <div className="pointer-events-auto absolute bottom-4 right-4">
-          <button
-            type="button"
-            onClick={toggleFullscreen}
-            className="rounded-full border border-stone-300 bg-white/90 px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-stone-700 shadow-sm backdrop-blur transition hover:border-stone-950 hover:text-stone-950"
-          >
-            {isFullscreen ? "Salir de pantalla completa" : "Pantalla completa"}
-          </button>
-        </div>
+        {props.fullscreenEnabled !== false ? (
+          <div className="pointer-events-auto absolute bottom-4 right-4">
+            <button
+              type="button"
+              onClick={toggleFullscreen}
+              className="rounded-full border border-stone-300 bg-white/90 px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-stone-700 shadow-sm backdrop-blur transition hover:border-stone-950 hover:text-stone-950"
+            >
+              {isFullscreen ? "Salir de pantalla completa" : "Pantalla completa"}
+            </button>
+          </div>
+        ) : null}
       </div>
 
       {webglSupported === null ? (
