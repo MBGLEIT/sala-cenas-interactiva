@@ -2435,8 +2435,9 @@ export default function AdminDashboard({
       </div>
 
       {importProgress ? (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-stone-950/55 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-3xl rounded-[32px] border border-stone-200 bg-white px-6 py-6 shadow-[0_30px_120px_rgba(28,25,23,0.28)]">
+        <div className="fixed inset-0 z-40 overflow-y-auto bg-stone-950/55 p-3 backdrop-blur-sm sm:p-4">
+          <div className="flex min-h-full items-start justify-center py-4 sm:items-center">
+          <div className="w-full max-w-3xl rounded-[32px] border border-stone-200 bg-white px-4 py-5 shadow-[0_30px_120px_rgba(28,25,23,0.28)] sm:px-6 sm:py-6">
             <div className="flex flex-col items-center text-center">
               <p className="text-sm font-semibold uppercase tracking-[0.25em] text-amber-700">
                 Importando plano
@@ -2481,7 +2482,7 @@ export default function AdminDashboard({
 
               {importProgress.expanded ? (
                 <div className="border-t border-stone-200 px-5 py-4">
-                  <div className="max-h-[320px] overflow-y-auto rounded-3xl bg-stone-950 px-4 py-4 font-mono text-xs leading-6 text-emerald-300">
+                  <div className="max-h-[40vh] overflow-y-auto rounded-3xl bg-stone-950 px-4 py-4 font-mono text-xs leading-6 text-emerald-300 sm:max-h-[320px]">
                     {importProgress.logs.length > 0 ? (
                       importProgress.logs.map((entry) => (
                         <p key={entry.id} className="whitespace-pre-wrap break-words">
@@ -2498,12 +2499,14 @@ export default function AdminDashboard({
               ) : null}
             </div>
           </div>
+          </div>
         </div>
       ) : null}
 
       {importReview && importReviewPreviewEvent ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/55 p-4 backdrop-blur-sm">
-          <div className="flex max-h-[92vh] w-full max-w-7xl flex-col overflow-hidden rounded-[32px] border border-stone-200 bg-white shadow-[0_30px_120px_rgba(28,25,23,0.28)]">
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-stone-950/55 p-3 backdrop-blur-sm sm:p-4">
+          <div className="flex min-h-full items-start justify-center py-4">
+          <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-7xl flex-col overflow-hidden rounded-[32px] border border-stone-200 bg-white shadow-[0_30px_120px_rgba(28,25,23,0.28)] sm:max-h-[92vh]">
             <div className="flex flex-wrap items-start justify-between gap-4 border-b border-stone-200 px-6 py-5">
               <div>
                 <p className="text-sm font-semibold uppercase tracking-[0.25em] text-amber-700">
@@ -2529,8 +2532,8 @@ export default function AdminDashboard({
               </div>
             </div>
 
-            <div className="grid flex-1 gap-0 xl:grid-cols-[minmax(0,1fr)_320px]">
-              <div className="flex min-h-[520px] flex-col border-b border-stone-200 xl:border-b-0 xl:border-r">
+            <div className="grid flex-1 gap-0 overflow-hidden xl:grid-cols-[minmax(0,1fr)_320px]">
+              <div className="flex min-h-[420px] flex-col overflow-hidden border-b border-stone-200 xl:min-h-[520px] xl:border-b-0 xl:border-r">
                 <DinnerRoomScene
                   evento={importReviewPreviewEvent}
                   selectedSillaId={null}
@@ -2562,12 +2565,12 @@ export default function AdminDashboard({
                 </div>
               </div>
 
-              <div className="min-h-0 px-6 py-5">
+              <div className="min-h-0 overflow-hidden px-4 py-4 sm:px-6 sm:py-5">
                 <details className="flex h-full min-h-0 flex-col overflow-hidden rounded-3xl border border-stone-200 bg-stone-50" open>
                   <summary className="cursor-pointer list-none px-5 py-4 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700">
                     Mesas y sillas importadas
                   </summary>
-                  <div className="grid max-h-[calc(92vh-280px)] gap-3 overflow-y-auto border-t border-stone-200 px-5 py-4 pb-8">
+                  <div className="grid max-h-[30vh] gap-3 overflow-y-auto border-t border-stone-200 px-5 py-4 pb-8 xl:max-h-[calc(92vh-280px)]">
                     {importReview.importedTables
                       .slice()
                       .sort((a, b) => a.numero - b.numero)
@@ -2591,8 +2594,9 @@ export default function AdminDashboard({
           </div>
 
           {showImportRejectActions ? (
-            <div className="absolute inset-0 z-20 flex items-center justify-center bg-stone-950/35 px-4 py-6 backdrop-blur-[2px]">
-              <div className="w-full max-w-xl rounded-[28px] border border-stone-200 bg-white px-6 py-6 shadow-[0_24px_90px_rgba(28,25,23,0.25)]">
+            <div className="absolute inset-0 z-20 overflow-y-auto bg-stone-950/35 px-4 py-6 backdrop-blur-[2px]">
+              <div className="flex min-h-full items-start justify-center py-2">
+              <div className="w-full max-w-xl rounded-[28px] border border-stone-200 bg-white px-5 py-5 shadow-[0_24px_90px_rgba(28,25,23,0.25)] sm:px-6 sm:py-6">
                 <p className="text-sm font-semibold uppercase tracking-[0.22em] text-rose-700">
                   El plano no ha quedado bien
                 </p>
@@ -2633,12 +2637,14 @@ export default function AdminDashboard({
                   </button>
                 </div>
               </div>
+              </div>
             </div>
           ) : null}
 
           {reimportDialogMode === "choice" ? (
-            <div className="absolute inset-0 z-30 flex items-center justify-center bg-stone-950/35 px-4 py-6 backdrop-blur-[2px]">
-              <div className="w-full max-w-lg rounded-[28px] border border-stone-200 bg-white px-6 py-6 shadow-[0_24px_90px_rgba(28,25,23,0.25)]">
+            <div className="absolute inset-0 z-30 overflow-y-auto bg-stone-950/35 px-4 py-6 backdrop-blur-[2px]">
+              <div className="flex min-h-full items-start justify-center py-2">
+              <div className="w-full max-w-lg rounded-[28px] border border-stone-200 bg-white px-5 py-5 shadow-[0_24px_90px_rgba(28,25,23,0.25)] sm:px-6 sm:py-6">
                 <p className="text-sm font-semibold uppercase tracking-[0.22em] text-amber-700">
                   Reintentar importacion
                 </p>
@@ -2673,13 +2679,15 @@ export default function AdminDashboard({
                   </button>
                 </div>
               </div>
+              </div>
             </div>
           ) : null}
 
           {reimportDialogMode === "params" ? (
-            <div className="absolute inset-0 z-30 flex items-center justify-center bg-stone-950/35 px-4 py-6 backdrop-blur-[2px]">
+            <div className="absolute inset-0 z-30 overflow-y-auto bg-stone-950/35 px-4 py-6 backdrop-blur-[2px]">
+              <div className="flex min-h-full items-start justify-center py-2">
               <form
-                className="w-full max-w-2xl rounded-[28px] border border-stone-200 bg-white px-6 py-6 shadow-[0_24px_90px_rgba(28,25,23,0.25)]"
+                className="w-full max-w-2xl rounded-[28px] border border-stone-200 bg-white px-5 py-5 shadow-[0_24px_90px_rgba(28,25,23,0.25)] sm:px-6 sm:py-6"
                 onSubmit={handleReimportWithChangedInputs}
               >
                 <p className="text-sm font-semibold uppercase tracking-[0.22em] text-amber-700">
@@ -2767,8 +2775,10 @@ export default function AdminDashboard({
                   </button>
                 </div>
               </form>
+              </div>
             </div>
           ) : null}
+          </div>
         </div>
       ) : null}
     </main>

@@ -1691,6 +1691,13 @@ export default function Home() {
           <div className="mt-6 flex items-center justify-between gap-3">
             <button
               type="button"
+              onClick={rejectIdentityCandidate}
+              className="inline-flex min-h-14 items-center justify-center rounded-full border border-amber-300 bg-amber-50 px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-amber-800 transition hover:border-amber-500 hover:bg-amber-100"
+            >
+              No soy yo
+            </button>
+            <button
+              type="button"
               onClick={cancelExistingReservationPrompt}
               className="inline-flex min-h-14 items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
             >
