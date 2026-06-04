@@ -1275,7 +1275,8 @@ export default function Home() {
       seleccionActual &&
       !reservaActual &&
       !showReservationSummary &&
-      !showReservationQuestionnaire ? (
+      !showReservationQuestionnaire &&
+      !useTouchMobileFlow ? (
         <div className="pointer-events-auto absolute bottom-4 left-1/2 flex w-[min(92vw,26rem)] -translate-x-1/2 flex-col items-stretch gap-3 sm:bottom-6 sm:left-auto sm:right-6 sm:w-auto sm:translate-x-0 sm:items-end">
           <div className="rounded-3xl border border-amber-300 bg-[linear-gradient(180deg,_#fff8db,_#fff1b8)] px-5 py-4 text-left shadow-sm sm:max-w-sm sm:text-right">
             <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-800">
@@ -1295,7 +1296,7 @@ export default function Home() {
         </div>
       ) : null}
 
-      {reservaActual ? (
+      {reservaActual && !useTouchMobileFlow ? (
         <div className="pointer-events-auto absolute bottom-4 left-1/2 w-[min(92vw,24rem)] -translate-x-1/2 rounded-[28px] border border-sky-200 bg-white/94 px-5 py-4 shadow-sm backdrop-blur sm:bottom-6 sm:left-auto sm:right-6 sm:w-auto sm:translate-x-0 sm:max-w-sm">
           <p className="text-sm font-semibold uppercase tracking-[0.18em] text-sky-700">
             Reserva existente
