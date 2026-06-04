@@ -943,6 +943,7 @@ export default function Home() {
     event.preventDefault();
 
     const identificadorLimpio = identificador.trim().toUpperCase();
+    const shouldUseTouchRoomFlow = isMobileOrTabletDevice();
 
     if (!identificadorLimpio) {
       resetMobileFlow();
@@ -953,6 +954,11 @@ export default function Home() {
         description: "Escribe el codigo del asistente para continuar.",
       });
       return;
+    }
+
+    if (shouldUseTouchRoomFlow) {
+      requestPresencialFullscreen();
+      requestLandscapeOrientation();
     }
 
     setLookupLoading(true);
@@ -994,10 +1000,6 @@ export default function Home() {
 
       setAsistente(result.asistente);
       await cargarEvento(result.asistente.evento_id);
-      if (isMobileOrTabletDevice()) {
-        requestPresencialFullscreen();
-        requestLandscapeOrientation();
-      }
       setScreen("room");
       setInfoMessage("Asistente identificado correctamente.");
       pushToast({
@@ -1017,6 +1019,9 @@ export default function Home() {
         title: "No se pudo continuar",
         description: message,
       });
+      if (shouldUseTouchRoomFlow) {
+        exitFullscreenIfActive();
+      }
     } finally {
       setLookupLoading(false);
     }
