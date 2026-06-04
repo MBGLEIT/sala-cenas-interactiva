@@ -994,6 +994,10 @@ export default function Home() {
 
       setAsistente(result.asistente);
       await cargarEvento(result.asistente.evento_id);
+      if (isMobileOrTabletDevice()) {
+        requestPresencialFullscreen();
+        requestLandscapeOrientation();
+      }
       setScreen("room");
       setInfoMessage("Asistente identificado correctamente.");
       pushToast({
@@ -1191,6 +1195,8 @@ export default function Home() {
       return;
     }
 
+    requestPresencialFullscreen();
+    requestLandscapeOrientation();
     setAsistente(identityCandidate.asistente);
     setEvento(identityCandidate.evento);
     setIdentityCandidate(null);
