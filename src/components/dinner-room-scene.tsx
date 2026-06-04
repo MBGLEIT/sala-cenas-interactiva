@@ -1,6 +1,6 @@
 "use client";
 
-import { PointerEvent as ReactPointerEvent, ReactNode, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { ReactNode, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
 import { ContactShadows, OrbitControls, PerspectiveCamera, Text } from "@react-three/drei";
 import { MOUSE, TOUCH } from "three";
@@ -312,10 +312,7 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<any>(null);
   const cameraRef = useRef<any>(null);
-  const joystickPointerIdRef = useRef<number | null>(null);
-  const joystickFrameRef = useRef<number | null>(null);
-  const pinchDistanceRef = useRef<number | null>(null);
-  const [joystickVector, setJoystickVector] = useState({ x: 0, y: 0 });
+  const twoTouchCenterRef = useRef<{ x: number; y: number } | null>(null);
   const [height, setHeight] = useState(520);
   const [viewMode, setViewMode] = useState<ViewMode>(props.defaultViewMode ?? "2d");
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -377,80 +374,71 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
 
   useEffect(() => {
     if (!isPresencialTouch3D || !containerRef.current) {
-      pinchDistanceRef.current = null;
+      twoTouchCenterRef.current = null;
       return;
     }
 
     const host = containerRef.current;
 
-    function getTouchDistance(touches: TouchList) {
+    function getTouchCenter(touches: TouchList) {
       if (touches.length < 2) {
         return null;
       }
 
       const first = touches[0];
       const second = touches[1];
-      const deltaX = second.clientX - first.clientX;
-      const deltaY = second.clientY - first.clientY;
 
-      return Math.hypot(deltaX, deltaY);
+      return {
+        x: (first.clientX + second.clientX) / 2,
+        y: (first.clientY + second.clientY) / 2,
+      };
     }
 
     function handleTouchStart(event: TouchEvent) {
       if (event.touches.length < 2) {
-        pinchDistanceRef.current = null;
+        twoTouchCenterRef.current = null;
         return;
       }
 
-      const distance = getTouchDistance(event.touches);
+      const center = getTouchCenter(event.touches);
 
-      if (distance === null) {
+      if (center === null) {
         return;
       }
 
-      pinchDistanceRef.current = distance;
+      twoTouchCenterRef.current = center;
       event.preventDefault();
       event.stopPropagation();
     }
 
     function handleTouchMove(event: TouchEvent) {
       if (event.touches.length < 2) {
-        pinchDistanceRef.current = null;
+        twoTouchCenterRef.current = null;
         return;
       }
 
       const controls = controlsRef.current;
-      const currentDistance = getTouchDistance(event.touches);
-      const previousDistance = pinchDistanceRef.current;
+      const currentCenter = getTouchCenter(event.touches);
+      const previousCenter = twoTouchCenterRef.current;
 
-      if (!controls || currentDistance === null || previousDistance === null || previousDistance <= 0) {
+      if (!controls || currentCenter === null || previousCenter === null) {
         return;
       }
 
-      const ratio = currentDistance / previousDistance;
+      const deltaX = currentCenter.x - previousCenter.x;
+      const deltaY = currentCenter.y - previousCenter.y;
 
-      if (Math.abs(ratio - 1) < 0.01) {
-        event.preventDefault();
-        event.stopPropagation();
-        return;
-      }
-
-      const scale = Math.min(Math.max(ratio, 0.92), 1.08);
-
-      if (ratio > 1) {
-        controls.dollyIn(scale);
-      } else {
-        controls.dollyOut(1 / scale);
-      }
+      controls.rotateLeft(deltaX * 0.006);
+      controls.rotateUp(deltaY * 0.0045);
 
       controls.update();
-      pinchDistanceRef.current = currentDistance;
+      twoTouchCenterRef.current = currentCenter;
       event.preventDefault();
       event.stopPropagation();
     }
 
-    function resetPinchState() {
-      pinchDistanceRef.current = null;
+    function resetTouchState() {
+      twoTouchCenterRef.current = null;
     }
 
     const activeTouchOptions: AddEventListenerOptions = { passive: false, capture: true };
@@ -458,51 +446,17 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
 
     host.addEventListener("touchstart", handleTouchStart, activeTouchOptions);
     host.addEventListener("touchmove", handleTouchMove, activeTouchOptions);
-    host.addEventListener("touchend", resetPinchState, captureOptions);
-    host.addEventListener("touchcancel", resetPinchState, captureOptions);
+    host.addEventListener("touchend", resetTouchState, captureOptions);
+    host.addEventListener("touchcancel", resetTouchState, captureOptions);
 
     return () => {
       host.removeEventListener("touchstart", handleTouchStart, activeTouchOptions);
       host.removeEventListener("touchmove", handleTouchMove, activeTouchOptions);
-      host.removeEventListener("touchend", resetPinchState, captureOptions);
-      host.removeEventListener("touchcancel", resetPinchState, captureOptions);
-      pinchDistanceRef.current = null;
+      host.removeEventListener("touchend", resetTouchState, captureOptions);
+      host.removeEventListener("touchcancel", resetTouchState, captureOptions);
+      twoTouchCenterRef.current = null;
     };
   }, [isPresencialTouch3D]);
-
-  useEffect(() => {
-    if (!isPresencialTouch3D) {
-      setJoystickVector({ x: 0, y: 0 });
-      return;
-    }
-
-    function tick() {
-      const controls = controlsRef.current;
-
-      if (controls) {
-        const horizontal = joystickVector.x;
-        const vertical = joystickVector.y;
-
-        if (Math.abs(horizontal) > 0.02 || Math.abs(vertical) > 0.02) {
-          controls.rotateLeft(horizontal * 0.032);
-          controls.rotateUp(vertical * 0.024);
-          controls.update();
-        }
-      }
-
-      joystickFrameRef.current = window.requestAnimationFrame(tick);
-    }
-
-    joystickFrameRef.current = window.requestAnimationFrame(tick);
-
-    return () => {
-      if (joystickFrameRef.current !== null) {
-        window.cancelAnimationFrame(joystickFrameRef.current);
-      }
-
-      joystickFrameRef.current = null;
-    };
-  }, [isPresencialTouch3D, joystickVector.x, joystickVector.y]);
 
   async function toggleFullscreen() {
     if (!containerRef.current) {
@@ -517,32 +471,20 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
     await containerRef.current.requestFullscreen();
   }
 
-  function updateJoystickPosition(
-    event: ReactPointerEvent<HTMLDivElement>,
-    pointerId: number,
-  ) {
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const centerX = bounds.width / 2;
-    const centerY = bounds.height / 2;
-    const radius = bounds.width / 2;
-    const rawX = event.clientX - bounds.left - centerX;
-    const rawY = event.clientY - bounds.top - centerY;
-    const distance = Math.hypot(rawX, rawY);
-    const limitedDistance = Math.min(distance, radius);
-    const angle = Math.atan2(rawY, rawX);
-    const nextX = radius === 0 ? 0 : (Math.cos(angle) * limitedDistance) / radius;
-    const nextY = radius === 0 ? 0 : (Math.sin(angle) * limitedDistance) / radius;
+  function adjust3DZoom(direction: "in" | "out") {
+    const controls = controlsRef.current;
 
-    joystickPointerIdRef.current = pointerId;
-    setJoystickVector({
-      x: clamp(nextX, -1, 1),
-      y: clamp(nextY, -1, 1),
-    });
-  }
+    if (!controls) {
+      return;
+    }
 
-  function resetJoystick() {
-    joystickPointerIdRef.current = null;
-    setJoystickVector({ x: 0, y: 0 });
+    if (direction === "in") {
+      controls.dollyIn(1.16);
+    } else {
+      controls.dollyOut(1.16);
+    }
+
+    controls.update();
   }
 
   const show3D = viewMode === "3d" && webglSupported;
@@ -588,7 +530,7 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
             {show3D
               ? props.touchMode
                 ? props.touchGestureProfile === "presencial"
-                  ? "Desliza con un dedo para desplazarte. Usa dos dedos para acercar o alejar y el joystick para girar la camara."
+                  ? "Desliza con un dedo para desplazarte. Usa dos dedos para mover la camara y los botones para acercar o alejar."
                   : "Arrastra con un dedo para girar la sala. Usa dos dedos para mover y acercar la camara."
                 : "Arrastra con el boton izquierdo para girar, con el derecho para mover la camara y usa la rueda para acercar o alejar."
               : props.touchMode
@@ -633,51 +575,22 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
               props.selectedSillaId ? "bottom-48 sm:bottom-52" : "bottom-4"
             } flex flex-col items-center gap-3`}
           >
-            <div
-              className="pointer-events-auto relative h-28 w-28 touch-none rounded-full border border-stone-300 bg-white/92 shadow-sm backdrop-blur"
-              onPointerDown={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                event.currentTarget.setPointerCapture(event.pointerId);
-                updateJoystickPosition(event, event.pointerId);
-              }}
-              onPointerMove={(event) => {
-                if (joystickPointerIdRef.current !== event.pointerId) {
-                  return;
-                }
-
-                event.preventDefault();
-                event.stopPropagation();
-                updateJoystickPosition(event, event.pointerId);
-              }}
-              onPointerUp={(event) => {
-                if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-                  event.currentTarget.releasePointerCapture(event.pointerId);
-                }
-
-                resetJoystick();
-              }}
-              onPointerCancel={(event) => {
-                if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-                  event.currentTarget.releasePointerCapture(event.pointerId);
-                }
-
-                resetJoystick();
-              }}
+            <button
+              type="button"
+              onClick={() => adjust3DZoom("in")}
+              className="pointer-events-auto inline-flex h-14 w-14 items-center justify-center rounded-full border border-stone-300 bg-white/95 text-2xl font-semibold text-stone-800 shadow-sm backdrop-blur transition hover:border-stone-950"
+              aria-label="Acercar"
             >
-              <div className="absolute inset-[18px] rounded-full border border-stone-200" />
-              <div className="absolute left-1/2 top-1/2 h-px w-16 -translate-x-1/2 -translate-y-1/2 bg-stone-200" />
-              <div className="absolute left-1/2 top-1/2 h-16 w-px -translate-x-1/2 -translate-y-1/2 bg-stone-200" />
-              <div
-                className="absolute left-1/2 top-1/2 h-11 w-11 -translate-x-1/2 -translate-y-1/2 rounded-full border border-stone-400 bg-stone-950/90 shadow-sm transition-transform"
-                style={{
-                  transform: `translate(calc(-50% + ${joystickVector.x * 26}px), calc(-50% + ${joystickVector.y * 26}px))`,
-                }}
-              />
-            </div>
-            <span className="rounded-full border border-stone-300 bg-white/90 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-stone-700 shadow-sm backdrop-blur">
-              Giro camara
-            </span>
+              +
+            </button>
+            <button
+              type="button"
+              onClick={() => adjust3DZoom("out")}
+              className="pointer-events-auto inline-flex h-14 w-14 items-center justify-center rounded-full border border-stone-300 bg-white/95 text-2xl font-semibold text-stone-800 shadow-sm backdrop-blur transition hover:border-stone-950"
+              aria-label="Alejar"
+            >
+              -
+            </button>
           </div>
         ) : null}
       </div>
