@@ -328,8 +328,8 @@ function OverlayModal({
   children: ReactNode;
 }) {
   return (
-    <div className="pointer-events-auto absolute inset-0 flex items-center justify-center bg-stone-950/45 px-4 py-6 backdrop-blur-sm">
-      <div className="w-full max-w-2xl rounded-[32px] border border-stone-200 bg-white p-6 shadow-[0_24px_80px_rgba(28,25,23,0.22)] sm:p-8">
+    <div className="pointer-events-auto absolute inset-0 overflow-y-auto bg-stone-950/45 px-3 py-4 backdrop-blur-sm sm:flex sm:items-center sm:justify-center sm:px-4 sm:py-6">
+      <div className="mx-auto max-h-[calc(100dvh-2rem)] w-full max-w-2xl overflow-y-auto rounded-[32px] border border-stone-200 bg-white p-5 shadow-[0_24px_80px_rgba(28,25,23,0.22)] sm:max-h-[calc(100dvh-3rem)] sm:p-8">
         <h3 className="text-3xl font-semibold tracking-tight text-stone-950">{title}</h3>
         {description ? (
           <p className="mt-3 text-base leading-7 text-stone-600">{description}</p>
@@ -433,6 +433,7 @@ export default function Home() {
   const [observacionesReserva, setObservacionesReserva] = useState("");
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [isMobileTablet, setIsMobileTablet] = useState(false);
+  const [isLandscapeViewport, setIsLandscapeViewport] = useState(true);
   const [mobileOverlayExpanded, setMobileOverlayExpanded] = useState(false);
   const scannerInputRef = useRef<HTMLInputElement>(null);
   const scannerProcessingRef = useRef(false);
@@ -449,6 +450,32 @@ export default function Home() {
     }
 
     void document.documentElement.requestFullscreen().catch(() => undefined);
+  }, []);
+
+  const exitFullscreenIfActive = useCallback(() => {
+    if (typeof document === "undefined" || !document.fullscreenElement) {
+      return;
+    }
+
+    void document.exitFullscreen().catch(() => undefined);
+  }, []);
+
+  const requestLandscapeOrientation = useCallback(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const orientationApi = window.screen?.orientation as
+      | (ScreenOrientation & {
+          lock?: (orientation: "landscape" | "portrait") => Promise<void>;
+        })
+      | undefined;
+
+    if (!orientationApi?.lock) {
+      return;
+    }
+
+    void orientationApi.lock("landscape").catch(() => undefined);
   }, []);
 
   const focusScannerInput = useCallback(() => {
@@ -509,6 +536,25 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    const updateOrientation = () => {
+      if (typeof window === "undefined") {
+        return;
+      }
+
+      setIsLandscapeViewport(window.innerWidth >= window.innerHeight);
+    };
+
+    updateOrientation();
+    window.addEventListener("resize", updateOrientation);
+    window.addEventListener("orientationchange", updateOrientation);
+
+    return () => {
+      window.removeEventListener("resize", updateOrientation);
+      window.removeEventListener("orientationchange", updateOrientation);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!useTouchMobileFlow) {
       setMobileOverlayExpanded(false);
     }
@@ -559,6 +605,7 @@ export default function Home() {
   }
 
   function goHome() {
+    exitFullscreenIfActive();
     setAccessMode(null);
     setScreen("home");
     setError("");
@@ -621,6 +668,15 @@ export default function Home() {
       timeoutIds.forEach((timeoutId) => window.clearTimeout(timeoutId));
     };
   }, [toasts]);
+
+  useEffect(() => {
+    if (screen !== "room" || !useTouchMobileFlow) {
+      return;
+    }
+
+    requestPresencialFullscreen();
+    requestLandscapeOrientation();
+  }, [requestLandscapeOrientation, requestPresencialFullscreen, screen, useTouchMobileFlow]);
 
   useEffect(() => {
     if (screen !== "presencial-wait") {
@@ -1383,26 +1439,26 @@ export default function Home() {
           title="Confirma la reserva"
           description="Comprueba la mesa y la silla antes de continuar con los datos adicionales."
         >
-          <div className="rounded-[28px] border border-amber-200 bg-amber-50 px-5 py-5 text-stone-900">
+          <div className="rounded-[28px] border border-amber-300 bg-[linear-gradient(180deg,_#fff7cc,_#ffe082)] px-5 py-5 text-stone-900 shadow-[0_18px_40px_rgba(245,158,11,0.22)] ring-1 ring-amber-200/80">
             <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-800">
               Seleccionada
             </p>
-            <p className="mt-3 text-2xl font-semibold tracking-tight">
+            <p className="mt-3 text-2xl font-semibold tracking-tight text-stone-950">
               Mesa {seleccionActual.mesaNumero}, Silla {seleccionActual.sillaNumero}
             </p>
           </div>
-          <div className="mt-6 flex items-center justify-between gap-3">
+          <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
             <button
               type="button"
               onClick={cancelReservationSummary}
-              className="inline-flex min-h-14 items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+              className="inline-flex min-h-14 w-full items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950 sm:w-auto"
             >
               Cancelar
             </button>
             <button
               type="button"
               onClick={continueReservationFlow}
-              className="inline-flex min-h-14 items-center justify-center rounded-full bg-emerald-600 px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-emerald-700"
+              className="inline-flex min-h-14 w-full items-center justify-center rounded-full bg-emerald-600 px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-emerald-700 sm:w-auto"
             >
               Continuar
             </button>
@@ -1425,11 +1481,11 @@ export default function Home() {
             observacionesReserva={observacionesReserva}
             setObservacionesReserva={setObservacionesReserva}
           />
-          <div className="mt-6 flex items-center justify-between gap-3">
+          <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
             <button
               type="button"
               onClick={cancelReservationQuestionnaire}
-              className="inline-flex min-h-14 items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+              className="inline-flex min-h-14 w-full items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950 sm:w-auto"
             >
               Cancelar
             </button>
@@ -1437,7 +1493,7 @@ export default function Home() {
               type="button"
               onClick={handleConfirmReservation}
               disabled={reservationLoading}
-              className="inline-flex min-h-14 items-center justify-center rounded-full bg-emerald-600 px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-stone-300"
+              className="inline-flex min-h-14 w-full items-center justify-center rounded-full bg-emerald-600 px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-stone-300 sm:w-auto"
             >
               {reservationLoading ? "Guardando..." : "Confirmar reserva"}
             </button>
@@ -1831,23 +1887,43 @@ export default function Home() {
       {screen === "room" && asistente && evento ? (
         accessMode === "presencial" || useTouchMobileFlow ? (
           <div className="mx-auto max-w-[1800px] space-y-6">
-            <section>
-              <DinnerRoomScene
-                evento={evento}
-                selectedSillaId={selectedSillaId}
-                currentAsistenteId={asistente.id}
-                selectionLocked={Boolean(reservaActual) || reservationLoading}
-                onSelectSilla={setSelectedSillaId}
-                overlay={guidedRoomOverlay}
-                touchMode
-                defaultViewMode="2d"
-                fullscreenBehavior="locked"
-                requestFullscreenOnMount
-                hide2DHeader
-                touchGestureProfile="presencial"
-                hideControlsLegend={useTouchMobileFlow}
-              />
-            </section>
+            {useTouchMobileFlow && !isLandscapeViewport ? (
+              <section className="flex min-h-[100dvh] items-center justify-center px-4 py-6">
+                <div className="w-full max-w-lg rounded-[36px] border border-stone-200 bg-white px-6 py-8 text-center shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-8">
+                  <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-amber-100 text-4xl text-amber-700 shadow-[0_12px_30px_rgba(245,158,11,0.18)]">
+                    ↻
+                  </div>
+                  <p className="mt-6 text-sm font-semibold uppercase tracking-[0.3em] text-amber-700">
+                    Sala optimizada para horizontal
+                  </p>
+                  <h2 className="mt-3 text-3xl font-semibold tracking-tight text-stone-950">
+                    Gira el dispositivo
+                  </h2>
+                  <p className="mt-4 text-base leading-7 text-stone-600">
+                    Para reservar desde movil o tablet necesitamos mostrar la sala en horizontal.
+                    En cuanto gires el dispositivo, entraremos automaticamente en la vista de sala.
+                  </p>
+                </div>
+              </section>
+            ) : (
+              <section>
+                <DinnerRoomScene
+                  evento={evento}
+                  selectedSillaId={selectedSillaId}
+                  currentAsistenteId={asistente.id}
+                  selectionLocked={Boolean(reservaActual) || reservationLoading}
+                  onSelectSilla={setSelectedSillaId}
+                  overlay={guidedRoomOverlay}
+                  touchMode
+                  defaultViewMode="2d"
+                  fullscreenBehavior="locked"
+                  requestFullscreenOnMount
+                  hide2DHeader
+                  touchGestureProfile="presencial"
+                  hideControlsLegend={useTouchMobileFlow}
+                />
+              </section>
+            )}
           </div>
         ) : (
           <div className="mx-auto max-w-7xl space-y-6">

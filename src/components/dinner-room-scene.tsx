@@ -437,11 +437,11 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
         </div>
 
         {!props.hideControlsLegend ? (
-          <div className="pointer-events-auto absolute bottom-4 left-4 max-w-md rounded-2xl border border-stone-200 bg-white/92 px-4 py-3 shadow-sm backdrop-blur">
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-700">
+          <div className="pointer-events-auto absolute bottom-4 left-4 max-w-md rounded-2xl border border-amber-200/80 bg-[linear-gradient(180deg,_rgba(255,251,235,0.98),_rgba(255,247,237,0.94))] px-4 py-3 shadow-[0_18px_40px_rgba(120,53,15,0.18)] ring-1 ring-white/70 backdrop-blur">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-800">
               {show3D ? "Controles 3D" : "Controles 2D"}
             </p>
-            <p className="mt-1 text-xs leading-5 text-stone-600">
+            <p className="mt-1 text-xs leading-5 text-stone-700">
               {show3D
                 ? props.touchMode
                   ? props.touchGestureProfile === "presencial"
