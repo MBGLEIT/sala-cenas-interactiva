@@ -234,7 +234,7 @@ function SceneContent(props: SceneContentProps) {
         ref={props.controlsRef}
         enablePan
         enableRotate
-        enableZoom
+        enableZoom={!(props.touchMode && props.touchGestureProfile === "presencial")}
         makeDefault
         dampingFactor={0.08}
         rotateSpeed={props.touchMode ? 0.72 : 1}
@@ -254,7 +254,7 @@ function SceneContent(props: SceneContentProps) {
             ? props.touchGestureProfile === "presencial"
               ? {
                   ONE: TOUCH.PAN,
-                  TWO: TOUCH.PAN as unknown as TOUCH,
+                  TWO: TOUCH.DOLLY_ROTATE,
                 }
               : {
                   ONE: TOUCH.ROTATE,
@@ -312,7 +312,6 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<any>(null);
   const cameraRef = useRef<any>(null);
-  const twoTouchCenterRef = useRef<{ x: number; y: number } | null>(null);
   const [height, setHeight] = useState(520);
   const [viewMode, setViewMode] = useState<ViewMode>(props.defaultViewMode ?? "2d");
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -372,92 +371,6 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
     void containerRef.current.requestFullscreen().catch(() => undefined);
   }, [props.requestFullscreenOnMount, props.evento.id]);
 
-  useEffect(() => {
-    if (!isPresencialTouch3D || !containerRef.current) {
-      twoTouchCenterRef.current = null;
-      return;
-    }
-
-    const host = containerRef.current;
-
-    function getTouchCenter(touches: TouchList) {
-      if (touches.length < 2) {
-        return null;
-      }
-
-      const first = touches[0];
-      const second = touches[1];
-
-      return {
-        x: (first.clientX + second.clientX) / 2,
-        y: (first.clientY + second.clientY) / 2,
-      };
-    }
-
-    function handleTouchStart(event: TouchEvent) {
-      if (event.touches.length < 2) {
-        twoTouchCenterRef.current = null;
-        return;
-      }
-
-      const center = getTouchCenter(event.touches);
-
-      if (center === null) {
-        return;
-      }
-
-      twoTouchCenterRef.current = center;
-      event.preventDefault();
-      event.stopPropagation();
-    }
-
-    function handleTouchMove(event: TouchEvent) {
-      if (event.touches.length < 2) {
-        twoTouchCenterRef.current = null;
-        return;
-      }
-
-      const controls = controlsRef.current;
-      const currentCenter = getTouchCenter(event.touches);
-      const previousCenter = twoTouchCenterRef.current;
-
-      if (!controls || currentCenter === null || previousCenter === null) {
-        return;
-      }
-
-      const deltaX = currentCenter.x - previousCenter.x;
-      const deltaY = currentCenter.y - previousCenter.y;
-
-      controls.rotateLeft(deltaX * 0.006);
-      controls.rotateUp(deltaY * 0.0045);
-
-      controls.update();
-      twoTouchCenterRef.current = currentCenter;
-      event.preventDefault();
-      event.stopPropagation();
-    }
-
-    function resetTouchState() {
-      twoTouchCenterRef.current = null;
-    }
-
-    const activeTouchOptions: AddEventListenerOptions = { passive: false, capture: true };
-    const captureOptions: AddEventListenerOptions = { capture: true };
-
-    host.addEventListener("touchstart", handleTouchStart, activeTouchOptions);
-    host.addEventListener("touchmove", handleTouchMove, activeTouchOptions);
-    host.addEventListener("touchend", resetTouchState, captureOptions);
-    host.addEventListener("touchcancel", resetTouchState, captureOptions);
-
-    return () => {
-      host.removeEventListener("touchstart", handleTouchStart, activeTouchOptions);
-      host.removeEventListener("touchmove", handleTouchMove, activeTouchOptions);
-      host.removeEventListener("touchend", resetTouchState, captureOptions);
-      host.removeEventListener("touchcancel", resetTouchState, captureOptions);
-      twoTouchCenterRef.current = null;
-    };
-  }, [isPresencialTouch3D]);
-
   async function toggleFullscreen() {
     if (!containerRef.current) {
       return;
@@ -479,9 +392,9 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
     }
 
     if (direction === "in") {
-      controls.dollyIn(1.16);
-    } else {
       controls.dollyOut(1.16);
+    } else {
+      controls.dollyIn(1.16);
     }
 
     controls.update();
