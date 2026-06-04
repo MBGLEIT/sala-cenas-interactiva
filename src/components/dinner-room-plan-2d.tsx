@@ -591,8 +591,8 @@ export default function DinnerRoomPlan2D({
 
       {touchMode ? (
         <div
-          className={`pointer-events-none absolute bottom-4 flex flex-col gap-3 ${
-            hideHeader ? "left-4 right-auto" : "right-4 left-auto"
+          className={`pointer-events-none absolute flex flex-col gap-3 right-4 left-auto ${
+            hideHeader && selectedSillaId ? "bottom-40 sm:bottom-44" : "bottom-4"
           }`}
         >
           <button
