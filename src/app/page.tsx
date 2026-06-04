@@ -433,6 +433,7 @@ export default function Home() {
   const [observacionesReserva, setObservacionesReserva] = useState("");
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [isMobileTablet, setIsMobileTablet] = useState(false);
+  const [mobileOverlayExpanded, setMobileOverlayExpanded] = useState(false);
   const scannerInputRef = useRef<HTMLInputElement>(null);
   const scannerProcessingRef = useRef(false);
   const scannerStartedAtRef = useRef(0);
@@ -440,6 +441,7 @@ export default function Home() {
   const scannerPreviousValueRef = useRef("");
   const selectedSillaIdRef = useRef<string | null>(null);
   const asistenteIdRef = useRef<string | null>(null);
+  const desktopReservationPanelRef = useRef<HTMLDivElement>(null);
 
   const requestPresencialFullscreen = useCallback(() => {
     if (typeof document === "undefined" || document.fullscreenElement) {
@@ -505,6 +507,28 @@ export default function Home() {
   useEffect(() => {
     setIsMobileTablet(isMobileOrTabletDevice());
   }, []);
+
+  useEffect(() => {
+    if (!useTouchMobileFlow) {
+      setMobileOverlayExpanded(false);
+    }
+  }, [useTouchMobileFlow, screen, evento?.id, asistente?.id]);
+
+  useEffect(() => {
+    if (
+      accessMode !== "movil" ||
+      useTouchMobileFlow ||
+      !selectedSillaId ||
+      !desktopReservationPanelRef.current
+    ) {
+      return;
+    }
+
+    desktopReservationPanelRef.current.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  }, [accessMode, selectedSillaId, useTouchMobileFlow]);
 
   function dismissToast(id: string) {
     setToasts((currentToasts) => currentToasts.filter((toast) => toast.id !== id));
@@ -1233,59 +1257,106 @@ export default function Home() {
 
   const guidedRoomOverlay = evento && asistente ? (
     <>
-      <div className="pointer-events-auto absolute left-3 right-3 top-3 max-w-sm rounded-[28px] border border-stone-200 bg-white/94 px-4 py-4 shadow-sm backdrop-blur sm:left-4 sm:right-auto sm:top-4 sm:px-5">
-        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-700">
-          {accessMode === "presencial" ? "Reserva presencial" : "Reserva movil"}
-        </p>
-        <h2 className="mt-2 text-2xl font-semibold tracking-tight text-stone-950">
-          {evento.nombre}
-        </h2>
-        <p className="mt-2 text-sm font-semibold uppercase tracking-[0.18em] text-stone-500">
-          {asistente.nombre}
-        </p>
-        <p className="mt-1 text-sm text-stone-600">{asistente.identificador}</p>
-        <div className="mt-4 flex flex-wrap gap-2">
-          <StatBadge
-            label="Tiempo real"
-            value={realtimeConnected ? "Activo" : "En espera"}
-            tone={realtimeConnected ? "success" : "neutral"}
-          />
-          {reservaActual ? (
-            <StatBadge
-              label="Reserva"
-              value={`Mesa ${reservaActual.mesaNumero} · Silla ${reservaActual.sillaNumero}`}
-              tone="warning"
-            />
+      {useTouchMobileFlow ? (
+        <div className="pointer-events-auto absolute left-3 right-3 top-3 max-w-sm sm:left-4 sm:right-auto sm:top-4">
+          <button
+            type="button"
+            onClick={() => setMobileOverlayExpanded((current) => !current)}
+            className="flex w-full items-center justify-between rounded-[24px] border border-stone-200 bg-white/94 px-4 py-4 text-left shadow-sm backdrop-blur"
+          >
+            <p className="truncate text-lg font-semibold tracking-tight text-stone-950">
+              {asistente.nombre}
+            </p>
+            <span className="ml-4 text-lg font-semibold text-stone-500">
+              {mobileOverlayExpanded ? "−" : "+"}
+            </span>
+          </button>
+
+          {mobileOverlayExpanded ? (
+            <div className="mt-3 rounded-[28px] border border-stone-200 bg-white/94 px-4 py-4 shadow-sm backdrop-blur sm:px-5">
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-700">
+                Reserva movil
+              </p>
+              <h2 className="mt-2 text-2xl font-semibold tracking-tight text-stone-950">
+                {evento.nombre}
+              </h2>
+              <p className="mt-2 text-sm font-semibold uppercase tracking-[0.18em] text-stone-500">
+                {asistente.nombre}
+              </p>
+              <p className="mt-1 text-sm text-stone-600">{asistente.identificador}</p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <StatBadge
+                  label="Tiempo real"
+                  value={realtimeConnected ? "Activo" : "En espera"}
+                  tone={realtimeConnected ? "success" : "neutral"}
+                />
+                {reservaActual ? (
+                  <StatBadge
+                    label="Reserva"
+                    value={`Mesa ${reservaActual.mesaNumero} · Silla ${reservaActual.sillaNumero}`}
+                    tone="warning"
+                  />
+                ) : null}
+              </div>
+              {reservaActual ? (
+                <div className="mt-4">
+                  <button
+                    type="button"
+                    onClick={resetMobileFlow}
+                    className="inline-flex min-h-12 items-center justify-center rounded-full border border-stone-300 bg-white px-5 py-3 text-xs font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+                  >
+                    Salir
+                  </button>
+                </div>
+              ) : null}
+            </div>
           ) : null}
         </div>
-        {useTouchMobileFlow && reservaActual ? (
-          <div className="mt-4">
-            <button
-              type="button"
-              onClick={resetMobileFlow}
-              className="inline-flex min-h-12 items-center justify-center rounded-full border border-stone-300 bg-white px-5 py-3 text-xs font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
-            >
-              Salir
-            </button>
+      ) : (
+        <div className="pointer-events-auto absolute left-3 right-3 top-3 max-w-sm rounded-[28px] border border-stone-200 bg-white/94 px-4 py-4 shadow-sm backdrop-blur sm:left-4 sm:right-auto sm:top-4 sm:px-5">
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-700">
+            {accessMode === "presencial" ? "Reserva presencial" : "Reserva movil"}
+          </p>
+          <h2 className="mt-2 text-2xl font-semibold tracking-tight text-stone-950">
+            {evento.nombre}
+          </h2>
+          <p className="mt-2 text-sm font-semibold uppercase tracking-[0.18em] text-stone-500">
+            {asistente.nombre}
+          </p>
+          <p className="mt-1 text-sm text-stone-600">{asistente.identificador}</p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <StatBadge
+              label="Tiempo real"
+              value={realtimeConnected ? "Activo" : "En espera"}
+              tone={realtimeConnected ? "success" : "neutral"}
+            />
+            {reservaActual ? (
+              <StatBadge
+                label="Reserva"
+                value={`Mesa ${reservaActual.mesaNumero} · Silla ${reservaActual.sillaNumero}`}
+                tone="warning"
+              />
+            ) : null}
           </div>
-        ) : null}
-      </div>
+        </div>
+      )}
 
       {selectedSillaId &&
       seleccionActual &&
       !reservaActual &&
       !showReservationSummary &&
-      !showReservationQuestionnaire &&
-      !useTouchMobileFlow ? (
+      !showReservationQuestionnaire ? (
         <div className="pointer-events-auto absolute bottom-4 left-1/2 flex w-[min(92vw,26rem)] -translate-x-1/2 flex-col items-stretch gap-3 sm:bottom-6 sm:left-auto sm:right-6 sm:w-auto sm:translate-x-0 sm:items-end">
-          <div className="rounded-3xl border border-amber-300 bg-[linear-gradient(180deg,_#fff8db,_#fff1b8)] px-5 py-4 text-left shadow-sm sm:max-w-sm sm:text-right">
-            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-800">
-              Seleccion actual
-            </p>
-            <p className="mt-2 text-base leading-7 text-stone-800">
-              Mesa {seleccionActual.mesaNumero}, Silla {seleccionActual.sillaNumero}
-            </p>
-          </div>
+          {!useTouchMobileFlow ? (
+            <div className="rounded-3xl border border-amber-300 bg-[linear-gradient(180deg,_#fff8db,_#fff1b8)] px-5 py-4 text-left shadow-sm sm:max-w-sm sm:text-right">
+              <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-800">
+                Seleccion actual
+              </p>
+              <p className="mt-2 text-base leading-7 text-stone-800">
+                Mesa {seleccionActual.mesaNumero}, Silla {seleccionActual.sillaNumero}
+              </p>
+            </div>
+          ) : null}
           <button
             type="button"
             onClick={openReservationSummary}
@@ -1307,7 +1378,6 @@ export default function Home() {
           </p>
         </div>
       ) : null}
-
       {showReservationSummary && seleccionActual ? (
         <OverlayModal
           title="Confirma la reserva"
@@ -1775,6 +1845,7 @@ export default function Home() {
                 requestFullscreenOnMount
                 hide2DHeader
                 touchGestureProfile="presencial"
+                hideControlsLegend={useTouchMobileFlow}
               />
             </section>
           </div>
@@ -1817,7 +1888,7 @@ export default function Home() {
                 />
               </div>
 
-              <div className="mt-6 rounded-3xl bg-stone-100 px-6 py-5">
+              <div ref={desktopReservationPanelRef} className="mt-6 rounded-3xl bg-stone-100 px-6 py-5">
                 <div className="flex flex-wrap gap-3">
                   <button
                     type="button"
@@ -2013,4 +2084,3 @@ export default function Home() {
     </main>
   );
 }
-

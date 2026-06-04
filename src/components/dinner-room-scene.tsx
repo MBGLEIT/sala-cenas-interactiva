@@ -31,6 +31,7 @@ type DinnerRoomSceneProps = {
   requestFullscreenOnMount?: boolean;
   hide2DHeader?: boolean;
   touchGestureProfile?: "default" | "presencial";
+  hideControlsLegend?: boolean;
 };
 
 type SceneContentProps = DinnerRoomSceneProps & {
@@ -435,22 +436,24 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
           </button>
         </div>
 
-        <div className="pointer-events-auto absolute bottom-4 left-4 max-w-md rounded-2xl border border-stone-200 bg-white/92 px-4 py-3 shadow-sm backdrop-blur">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-700">
-            {show3D ? "Controles 3D" : "Controles 2D"}
-          </p>
-          <p className="mt-1 text-xs leading-5 text-stone-600">
-            {show3D
-              ? props.touchMode
-                ? props.touchGestureProfile === "presencial"
-                  ? "Desliza con un dedo para desplazarte. Usa dos dedos para mover la camara y los botones para acercar o alejar."
-                  : "Arrastra con un dedo para girar la sala. Usa dos dedos para mover y acercar la camara."
-                : "Arrastra con el boton izquierdo para girar, con el derecho para mover la camara y usa la rueda para acercar o alejar."
-              : props.touchMode
-                ? "Arrastra para mover el plano y usa los controles grandes para acercar, alejar o centrar."
-                : "Usa la rueda del raton para hacer zoom y arrastra para desplazarte por el plano."}
-          </p>
-        </div>
+        {!props.hideControlsLegend ? (
+          <div className="pointer-events-auto absolute bottom-4 left-4 max-w-md rounded-2xl border border-stone-200 bg-white/92 px-4 py-3 shadow-sm backdrop-blur">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-700">
+              {show3D ? "Controles 3D" : "Controles 2D"}
+            </p>
+            <p className="mt-1 text-xs leading-5 text-stone-600">
+              {show3D
+                ? props.touchMode
+                  ? props.touchGestureProfile === "presencial"
+                    ? "Desliza con un dedo para desplazarte. Usa dos dedos para mover la camara y los botones para acercar o alejar."
+                    : "Arrastra con un dedo para girar la sala. Usa dos dedos para mover y acercar la camara."
+                  : "Arrastra con el boton izquierdo para girar, con el derecho para mover la camara y usa la rueda para acercar o alejar."
+                : props.touchMode
+                  ? "Arrastra para mover el plano y usa los controles grandes para acercar, alejar o centrar."
+                  : "Usa la rueda del raton para hacer zoom y arrastra para desplazarte por el plano."}
+            </p>
+          </div>
+        ) : null}
 
         {props.fullscreenBehavior === "available" ? (
           <div className="pointer-events-auto absolute bottom-4 right-4">
