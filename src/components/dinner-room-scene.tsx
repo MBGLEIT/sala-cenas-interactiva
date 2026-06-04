@@ -30,6 +30,7 @@ type DinnerRoomSceneProps = {
   fullscreenBehavior?: "available" | "locked" | "hidden";
   requestFullscreenOnMount?: boolean;
   hide2DHeader?: boolean;
+  touchGestureProfile?: "default" | "presencial";
 };
 
 type ViewMode = "3d" | "2d";
@@ -247,10 +248,15 @@ function SceneContent(props: DinnerRoomSceneProps) {
         }}
         touches={
           props.touchMode
-            ? {
-                ONE: TOUCH.ROTATE,
-                TWO: TOUCH.DOLLY_PAN,
-              }
+            ? props.touchGestureProfile === "presencial"
+              ? {
+                  ONE: TOUCH.PAN,
+                  TWO: TOUCH.DOLLY_ROTATE,
+                }
+              : {
+                  ONE: TOUCH.ROTATE,
+                  TWO: TOUCH.DOLLY_PAN,
+                }
             : undefined
         }
         onChange={clampControlsToHall}
@@ -413,7 +419,9 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
           <p className="mt-1 text-xs leading-5 text-stone-600">
             {show3D
               ? props.touchMode
-                ? "Arrastra con un dedo para girar la sala. Usa dos dedos para mover y acercar la camara."
+                ? props.touchGestureProfile === "presencial"
+                  ? "Desliza con un dedo para desplazarte. Usa dos dedos para girar la sala y ajustar la camara."
+                  : "Arrastra con un dedo para girar la sala. Usa dos dedos para mover y acercar la camara."
                 : "Arrastra con el boton izquierdo para girar, con el derecho para mover la camara y usa la rueda para acercar o alejar."
               : props.touchMode
                 ? "Arrastra para mover el plano y usa los controles grandes para acercar, alejar o centrar."

@@ -1740,6 +1740,7 @@ export default function Home() {
                 fullscreenBehavior="locked"
                 requestFullscreenOnMount
                 hide2DHeader
+                touchGestureProfile="presencial"
               />
             </section>
           </div>
