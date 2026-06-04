@@ -254,7 +254,7 @@ function SceneContent(props: SceneContentProps) {
             ? props.touchGestureProfile === "presencial"
               ? {
                   ONE: TOUCH.PAN,
-                  TWO: TOUCH.DOLLY_ROTATE,
+                  TWO: TOUCH.PAN as unknown as TOUCH,
                 }
               : {
                   ONE: TOUCH.ROTATE,
