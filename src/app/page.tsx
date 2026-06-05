@@ -56,6 +56,7 @@ type AccessMode = "presencial" | "movil" | null;
 type PublicScreen =
   | "home"
   | "movil-identify"
+  | "movil-ready"
   | "presencial-wait"
   | "presencial-manual"
   | "room";
@@ -640,11 +641,27 @@ export default function Home() {
   }
 
   function resetMobileFlow() {
+    exitFullscreenIfActive();
     setScreen("movil-identify");
     setError("");
     setInfoMessage("");
     setIdentificador("");
     clearSessionState();
+  }
+
+  function enterMobileTouchPreparation() {
+    setScreen("movil-ready");
+    setInfoMessage("Activa la pantalla completa para continuar con la reserva.");
+  }
+
+  function enterMobileTouchRoom() {
+    requestPresencialFullscreen();
+    requestLandscapeOrientation();
+
+    if (isLandscapeViewport) {
+      setScreen("room");
+      setInfoMessage("Asistente identificado correctamente.");
+    }
   }
 
   useEffect(() => {
@@ -677,6 +694,21 @@ export default function Home() {
     requestPresencialFullscreen();
     requestLandscapeOrientation();
   }, [requestLandscapeOrientation, requestPresencialFullscreen, screen, useTouchMobileFlow]);
+
+  useEffect(() => {
+    if (
+      screen !== "movil-ready" ||
+      !useTouchMobileFlow ||
+      !isLandscapeViewport ||
+      typeof document === "undefined" ||
+      !document.fullscreenElement
+    ) {
+      return;
+    }
+
+    setScreen("room");
+    setInfoMessage("Asistente identificado correctamente.");
+  }, [isLandscapeViewport, screen, useTouchMobileFlow]);
 
   useEffect(() => {
     if (screen !== "presencial-wait") {
@@ -1000,8 +1032,12 @@ export default function Home() {
 
       setAsistente(result.asistente);
       await cargarEvento(result.asistente.evento_id);
-      setScreen("room");
-      setInfoMessage("Asistente identificado correctamente.");
+      if (shouldUseTouchRoomFlow) {
+        enterMobileTouchPreparation();
+      } else {
+        setScreen("room");
+        setInfoMessage("Asistente identificado correctamente.");
+      }
       pushToast({
         tone: "success",
         title: "Acceso correcto",
@@ -1414,16 +1450,18 @@ export default function Home() {
       !showReservationSummary &&
       !showReservationQuestionnaire ? (
         <div className="pointer-events-auto absolute bottom-4 left-1/2 flex w-[min(92vw,26rem)] -translate-x-1/2 flex-col items-stretch gap-3 sm:bottom-6 sm:left-auto sm:right-6 sm:w-auto sm:translate-x-0 sm:items-end">
-          {!useTouchMobileFlow ? (
-            <div className="rounded-3xl border border-amber-300 bg-[linear-gradient(180deg,_#fff8db,_#fff1b8)] px-5 py-4 text-left shadow-sm sm:max-w-sm sm:text-right">
-              <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-800">
-                Seleccion actual
-              </p>
-              <p className="mt-2 text-base leading-7 text-stone-800">
-                Mesa {seleccionActual.mesaNumero}, Silla {seleccionActual.sillaNumero}
-              </p>
-            </div>
-          ) : null}
+          <div
+            className={`rounded-3xl border border-amber-300 bg-[linear-gradient(180deg,_#fff8db,_#fff1b8)] px-5 py-4 text-left shadow-sm ${
+              useTouchMobileFlow ? "w-full" : "sm:max-w-sm sm:text-right"
+            }`}
+          >
+            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-800">
+              Seleccion actual
+            </p>
+            <p className="mt-2 text-base leading-7 text-stone-800">
+              Mesa {seleccionActual.mesaNumero}, Silla {seleccionActual.sillaNumero}
+            </p>
+          </div>
           <button
             type="button"
             onClick={openReservationSummary}
@@ -1625,6 +1663,52 @@ export default function Home() {
             </div>
           ) : null}
         </div>
+      ) : null}
+
+      {screen === "movil-ready" ? (
+        <section className="mx-auto flex min-h-[100dvh] max-w-3xl items-center justify-center px-4 py-6">
+          <div className="w-full rounded-[36px] border border-stone-200 bg-white px-6 py-8 text-center shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-8 sm:py-10">
+            <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-emerald-100 text-4xl text-emerald-700 shadow-[0_12px_30px_rgba(16,185,129,0.18)]">
+              □
+            </div>
+            <p className="mt-6 text-sm font-semibold uppercase tracking-[0.3em] text-emerald-700">
+              Reserva movil
+            </p>
+            <h2 className="mt-3 text-3xl font-semibold tracking-tight text-stone-950">
+              Activa la pantalla completa
+            </h2>
+            <p className="mt-4 text-base leading-7 text-stone-600">
+              Para una experiencia mas comoda en movil o tablet, activa primero la pantalla
+              completa. Despues te llevaremos a la sala para reservar.
+            </p>
+            {!isLandscapeViewport ? (
+              <div className="mt-6 rounded-[28px] border border-amber-200 bg-amber-50 px-5 py-4 text-left">
+                <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-800">
+                  Gira el dispositivo
+                </p>
+                <p className="mt-2 text-base leading-7 text-amber-900/80">
+                  La sala esta optimizada para mostrarse en horizontal.
+                </p>
+              </div>
+            ) : null}
+            <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:justify-center">
+              <button
+                type="button"
+                onClick={enterMobileTouchRoom}
+                className="inline-flex min-h-14 items-center justify-center rounded-full bg-emerald-600 px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-emerald-700"
+              >
+                Activar pantalla completa
+              </button>
+              <button
+                type="button"
+                onClick={resetMobileFlow}
+                className="inline-flex min-h-14 items-center justify-center rounded-full border border-stone-300 bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+              >
+                Volver
+              </button>
+            </div>
+          </div>
+        </section>
       ) : null}
 
       {screen === "presencial-wait" ? (
