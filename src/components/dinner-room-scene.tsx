@@ -503,7 +503,7 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
             className={`pointer-events-none absolute right-4 ${
               props.selectedSillaId
                 ? props.compactUi
-                  ? "bottom-40 sm:bottom-44"
+                  ? "bottom-32 sm:bottom-36"
                   : "bottom-48 sm:bottom-52"
                 : "bottom-4"
             } flex flex-col items-center gap-3`}
