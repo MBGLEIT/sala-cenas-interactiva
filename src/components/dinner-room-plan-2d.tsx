@@ -599,7 +599,7 @@ export default function DinnerRoomPlan2D({
             hideHeader && selectedSillaId
               ? compactUi
                 ? "bottom-36 sm:bottom-40"
-                : "bottom-60 sm:bottom-64"
+                : "bottom-56 sm:bottom-60"
               : "bottom-4"
           } ${compactUi ? "items-end" : ""}`}
         >
