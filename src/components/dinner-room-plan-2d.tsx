@@ -595,7 +595,13 @@ export default function DinnerRoomPlan2D({
         <div
           className={`pointer-events-none absolute left-auto flex flex-col gap-3 ${
             compactUi ? "right-1" : "right-4"
-          } ${hideHeader && selectedSillaId ? "bottom-36 sm:bottom-40" : "bottom-4"}`}
+          } ${
+            hideHeader && selectedSillaId
+              ? compactUi
+                ? "bottom-36 sm:bottom-40"
+                : "bottom-52 sm:bottom-56"
+              : "bottom-4"
+          }`}
         >
           <button
             type="button"
