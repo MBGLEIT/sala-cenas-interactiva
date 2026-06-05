@@ -1223,6 +1223,9 @@ export default function Home() {
         goToPresencialWait("Reserva completada. Esperando el siguiente QR.");
       } else {
         resetReservationForm();
+        if (useTouchMobileFlow) {
+          setMobileOverlayExpanded(true);
+        }
         setInfoMessage(message);
       }
     } catch {
