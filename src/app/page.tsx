@@ -73,7 +73,7 @@ type ExistingReservationPrompt = {
 };
 
 function isMobileOrTabletDevice() {
-  if (typeof navigator === "undefined") {
+  if (typeof navigator === "undefined" || typeof window === "undefined") {
     return false;
   }
 
@@ -82,8 +82,18 @@ function isMobileOrTabletDevice() {
     /android|iphone|ipad|ipod|mobile|tablet|silk|kindle|playbook/.test(userAgent);
   const isIPadDesktopMode =
     navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
+  const hasCoarsePointer =
+    window.matchMedia?.("(pointer: coarse)")?.matches ||
+    window.matchMedia?.("(any-pointer: coarse)")?.matches ||
+    false;
+  const shortestSide = Math.min(window.innerWidth, window.innerHeight);
+  const looksLikeTabletOrPhoneViewport = shortestSide <= 1024;
 
-  return matchesMobileAgent || isIPadDesktopMode;
+  return (
+    matchesMobileAgent ||
+    isIPadDesktopMode ||
+    (hasCoarsePointer && navigator.maxTouchPoints > 1 && looksLikeTabletOrPhoneViewport)
+  );
 }
 
 async function fetchEventoSala(eventoId: string): Promise<EventoSala> {
@@ -975,7 +985,7 @@ export default function Home() {
     event.preventDefault();
 
     const identificadorLimpio = identificador.trim().toUpperCase();
-    const shouldUseTouchRoomFlow = isMobileOrTabletDevice();
+    const shouldUseTouchRoomFlow = isMobileTablet || isMobileOrTabletDevice();
 
     if (!identificadorLimpio) {
       resetMobileFlow();
@@ -989,6 +999,7 @@ export default function Home() {
     }
 
     if (shouldUseTouchRoomFlow) {
+      setIsMobileTablet(true);
       requestPresencialFullscreen();
       requestLandscapeOrientation();
     }
@@ -1451,21 +1462,35 @@ export default function Home() {
       !showReservationQuestionnaire ? (
         <div className="pointer-events-auto absolute bottom-4 left-1/2 flex w-[min(92vw,26rem)] -translate-x-1/2 flex-col items-stretch gap-3 sm:bottom-6 sm:left-auto sm:right-6 sm:w-auto sm:translate-x-0 sm:items-end">
           <div
-            className={`rounded-3xl border border-amber-300 bg-[linear-gradient(180deg,_#fff8db,_#fff1b8)] px-5 py-4 text-left shadow-sm ${
-              useTouchMobileFlow ? "w-full" : "sm:max-w-sm sm:text-right"
+            className={`rounded-3xl border border-amber-300 bg-[linear-gradient(180deg,_#fff8db,_#fff1b8)] text-left shadow-sm ${
+              useTouchMobileFlow
+                ? "w-full px-4 py-3"
+                : "px-5 py-4 sm:max-w-sm sm:text-right"
             }`}
           >
-            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-800">
+            <p
+              className={`font-semibold uppercase tracking-[0.18em] text-amber-800 ${
+                useTouchMobileFlow ? "text-xs" : "text-sm"
+              }`}
+            >
               Seleccion actual
             </p>
-            <p className="mt-2 text-base leading-7 text-stone-800">
+            <p
+              className={`mt-2 text-stone-800 ${
+                useTouchMobileFlow ? "text-sm leading-6" : "text-base leading-7"
+              }`}
+            >
               Mesa {seleccionActual.mesaNumero}, Silla {seleccionActual.sillaNumero}
             </p>
           </div>
           <button
             type="button"
             onClick={openReservationSummary}
-            className="inline-flex min-h-16 min-w-[240px] items-center justify-center rounded-full bg-emerald-600 px-8 py-4 text-base font-semibold uppercase tracking-[0.18em] text-white shadow-[0_18px_40px_rgba(22,163,74,0.28)] transition hover:bg-emerald-700"
+            className={`inline-flex items-center justify-center rounded-full bg-emerald-600 font-semibold uppercase tracking-[0.18em] text-white shadow-[0_18px_40px_rgba(22,163,74,0.28)] transition hover:bg-emerald-700 ${
+              useTouchMobileFlow
+                ? "min-h-14 min-w-[210px] px-6 py-3 text-sm"
+                : "min-h-16 min-w-[240px] px-8 py-4 text-base"
+            }`}
           >
             Confirmar reserva
           </button>
