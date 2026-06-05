@@ -32,6 +32,7 @@ type DinnerRoomSceneProps = {
   hide2DHeader?: boolean;
   touchGestureProfile?: "default" | "presencial";
   hideControlsLegend?: boolean;
+  compactUi?: boolean;
 };
 
 type SceneContentProps = DinnerRoomSceneProps & {
@@ -406,16 +407,26 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
   return (
     <div
       ref={containerRef}
-      className="relative overflow-hidden rounded-[28px] border border-stone-200 bg-[linear-gradient(180deg,_#ffffff,_#fafaf9)]"
-      style={{ height: isFullscreen ? "100vh" : height }}
+      className={`relative overflow-hidden bg-[linear-gradient(180deg,_#ffffff,_#fafaf9)] ${
+        props.compactUi
+          ? "h-[100dvh] w-full rounded-none border-0"
+          : "rounded-[28px] border border-stone-200"
+      }`}
+      style={{ height: props.compactUi ? "100dvh" : isFullscreen ? "100vh" : height }}
     >
       <div className="pointer-events-none absolute inset-0 z-10">
-        <div className="pointer-events-auto absolute right-4 top-4 flex overflow-hidden rounded-full border border-stone-300 bg-white/92 shadow-sm backdrop-blur">
+        <div
+          className={`pointer-events-auto absolute right-4 top-4 flex overflow-hidden rounded-full border border-stone-300 bg-white/92 shadow-sm backdrop-blur ${
+            props.compactUi ? "scale-90 origin-top-right" : ""
+          }`}
+        >
           <button
             type="button"
             onClick={() => setViewMode("3d")}
             disabled={!webglSupported}
-            className={`px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] transition ${
+            className={`font-semibold uppercase tracking-[0.18em] transition ${
+              props.compactUi ? "px-3 py-1.5 text-[11px]" : "px-4 py-2 text-xs"
+            } ${
               viewMode === "3d"
                 ? "bg-stone-950 text-white"
                 : "text-stone-700 hover:bg-stone-100 hover:text-stone-950"
@@ -426,7 +437,9 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
           <button
             type="button"
             onClick={() => setViewMode("2d")}
-            className={`px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] transition ${
+            className={`font-semibold uppercase tracking-[0.18em] transition ${
+              props.compactUi ? "px-3 py-1.5 text-[11px]" : "px-4 py-2 text-xs"
+            } ${
               viewMode === "2d"
                 ? "bg-stone-950 text-white"
                 : "text-stone-700 hover:bg-stone-100 hover:text-stone-950"
@@ -488,13 +501,19 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
         {isPresencialTouch3D ? (
           <div
             className={`pointer-events-none absolute right-4 ${
-              props.selectedSillaId ? "bottom-48 sm:bottom-52" : "bottom-4"
+              props.selectedSillaId
+                ? props.compactUi
+                  ? "bottom-40 sm:bottom-44"
+                  : "bottom-48 sm:bottom-52"
+                : "bottom-4"
             } flex flex-col items-center gap-3`}
           >
             <button
               type="button"
               onClick={() => adjust3DZoom("in")}
-              className="pointer-events-auto inline-flex h-14 w-14 items-center justify-center rounded-full border border-stone-300 bg-white/95 text-2xl font-semibold text-stone-800 shadow-sm backdrop-blur transition hover:border-stone-950"
+              className={`pointer-events-auto inline-flex items-center justify-center rounded-full border border-stone-300 bg-white/95 font-semibold text-stone-800 shadow-sm backdrop-blur transition hover:border-stone-950 ${
+                props.compactUi ? "h-12 w-12 text-xl" : "h-14 w-14 text-2xl"
+              }`}
               aria-label="Acercar"
             >
               +
@@ -502,7 +521,9 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
             <button
               type="button"
               onClick={() => adjust3DZoom("out")}
-              className="pointer-events-auto inline-flex h-14 w-14 items-center justify-center rounded-full border border-stone-300 bg-white/95 text-2xl font-semibold text-stone-800 shadow-sm backdrop-blur transition hover:border-stone-950"
+              className={`pointer-events-auto inline-flex items-center justify-center rounded-full border border-stone-300 bg-white/95 font-semibold text-stone-800 shadow-sm backdrop-blur transition hover:border-stone-950 ${
+                props.compactUi ? "h-12 w-12 text-xl" : "h-14 w-14 text-2xl"
+              }`}
               aria-label="Alejar"
             >
               -
@@ -527,6 +548,7 @@ export default function DinnerRoomScene(props: DinnerRoomSceneProps) {
           showCompatibilityMessage={webglSupported === false}
           touchMode={props.touchMode}
           hideHeader={props.hide2DHeader}
+          compactUi={props.compactUi}
         />
       )}
     </div>

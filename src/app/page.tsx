@@ -1372,33 +1372,33 @@ export default function Home() {
   const guidedRoomOverlay = evento && asistente ? (
     <>
       {useTouchMobileFlow ? (
-        <div className="pointer-events-auto absolute left-3 right-3 top-3 max-w-sm sm:left-4 sm:right-auto sm:top-4">
+        <div className="pointer-events-auto absolute left-3 right-3 top-3 max-w-[18rem] sm:left-4 sm:right-auto sm:top-4">
           <button
             type="button"
             onClick={() => setMobileOverlayExpanded((current) => !current)}
-            className="flex w-full items-center justify-between rounded-[24px] border border-stone-200 bg-white/94 px-4 py-4 text-left shadow-sm backdrop-blur"
+            className="flex w-full items-center justify-between rounded-[20px] border border-stone-200 bg-white/94 px-3 py-3 text-left shadow-sm backdrop-blur"
           >
-            <p className="truncate text-lg font-semibold tracking-tight text-stone-950">
+            <p className="truncate text-base font-semibold tracking-tight text-stone-950">
               {asistente.nombre}
             </p>
-            <span className="ml-4 text-lg font-semibold text-stone-500">
+            <span className="ml-3 text-base font-semibold text-stone-500">
               {mobileOverlayExpanded ? "−" : "+"}
             </span>
           </button>
 
           {mobileOverlayExpanded ? (
-            <div className="mt-3 rounded-[28px] border border-stone-200 bg-white/94 px-4 py-4 shadow-sm backdrop-blur sm:px-5">
+            <div className="mt-2 rounded-[24px] border border-stone-200 bg-white/94 px-3 py-3 shadow-sm backdrop-blur sm:px-4">
               <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-700">
                 Reserva movil
               </p>
-              <h2 className="mt-2 text-2xl font-semibold tracking-tight text-stone-950">
+              <h2 className="mt-2 text-xl font-semibold tracking-tight text-stone-950">
                 {evento.nombre}
               </h2>
-              <p className="mt-2 text-sm font-semibold uppercase tracking-[0.18em] text-stone-500">
+              <p className="mt-2 text-xs font-semibold uppercase tracking-[0.18em] text-stone-500">
                 {asistente.nombre}
               </p>
-              <p className="mt-1 text-sm text-stone-600">{asistente.identificador}</p>
-              <div className="mt-4 flex flex-wrap gap-2">
+              <p className="mt-1 text-xs text-stone-600">{asistente.identificador}</p>
+              <div className="mt-3 flex flex-wrap gap-2">
                 <StatBadge
                   label="Tiempo real"
                   value={realtimeConnected ? "Activo" : "En espera"}
@@ -1413,11 +1413,11 @@ export default function Home() {
                 ) : null}
               </div>
               {reservaActual ? (
-                <div className="mt-4">
+                <div className="mt-3">
                   <button
                     type="button"
                     onClick={resetMobileFlow}
-                    className="inline-flex min-h-12 items-center justify-center rounded-full border border-stone-300 bg-white px-5 py-3 text-xs font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+                    className="inline-flex min-h-10 items-center justify-center rounded-full border border-stone-300 bg-white px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
                   >
                     Salir
                   </button>
@@ -1460,24 +1460,24 @@ export default function Home() {
       !reservaActual &&
       !showReservationSummary &&
       !showReservationQuestionnaire ? (
-        <div className="pointer-events-auto absolute bottom-4 left-1/2 flex w-[min(92vw,26rem)] -translate-x-1/2 flex-col items-stretch gap-3 sm:bottom-6 sm:left-auto sm:right-6 sm:w-auto sm:translate-x-0 sm:items-end">
+        <div className="pointer-events-auto absolute bottom-4 left-1/2 flex w-[min(88vw,22rem)] -translate-x-1/2 flex-col items-stretch gap-2.5 sm:bottom-6 sm:left-auto sm:right-6 sm:w-auto sm:translate-x-0 sm:items-end">
           <div
             className={`rounded-3xl border border-amber-300 bg-[linear-gradient(180deg,_#fff8db,_#fff1b8)] text-left shadow-sm ${
               useTouchMobileFlow
-                ? "w-full px-4 py-3"
+                ? "w-full px-3 py-2.5"
                 : "px-5 py-4 sm:max-w-sm sm:text-right"
             }`}
           >
             <p
               className={`font-semibold uppercase tracking-[0.18em] text-amber-800 ${
-                useTouchMobileFlow ? "text-xs" : "text-sm"
+                useTouchMobileFlow ? "text-[11px]" : "text-sm"
               }`}
             >
               Seleccion actual
             </p>
             <p
               className={`mt-2 text-stone-800 ${
-                useTouchMobileFlow ? "text-sm leading-6" : "text-base leading-7"
+                useTouchMobileFlow ? "text-xs leading-5" : "text-base leading-7"
               }`}
             >
               Mesa {seleccionActual.mesaNumero}, Silla {seleccionActual.sillaNumero}
@@ -1488,7 +1488,7 @@ export default function Home() {
             onClick={openReservationSummary}
             className={`inline-flex items-center justify-center rounded-full bg-emerald-600 font-semibold uppercase tracking-[0.18em] text-white shadow-[0_18px_40px_rgba(22,163,74,0.28)] transition hover:bg-emerald-700 ${
               useTouchMobileFlow
-                ? "min-h-14 min-w-[210px] px-6 py-3 text-sm"
+                ? "min-h-12 min-w-[180px] px-5 py-2.5 text-xs"
                 : "min-h-16 min-w-[240px] px-8 py-4 text-base"
             }`}
           >
@@ -2006,7 +2006,13 @@ export default function Home() {
 
       {screen === "room" && asistente && evento ? (
         accessMode === "presencial" || useTouchMobileFlow ? (
-          <div className="mx-auto max-w-[1800px] space-y-6">
+          <div
+            className={
+              useTouchMobileFlow
+                ? "fixed inset-0 z-30 h-[100dvh] w-screen overflow-hidden bg-[radial-gradient(circle_at_top,_#fff7ed,_#f5f5f4_55%,_#e7e5e4)]"
+                : "mx-auto max-w-[1800px] space-y-6"
+            }
+          >
             {useTouchMobileFlow && !isLandscapeViewport ? (
               <section className="flex min-h-[100dvh] items-center justify-center px-4 py-6">
                 <div className="w-full max-w-lg rounded-[36px] border border-stone-200 bg-white px-6 py-8 text-center shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-8">
@@ -2026,7 +2032,7 @@ export default function Home() {
                 </div>
               </section>
             ) : (
-              <section>
+              <section className={useTouchMobileFlow ? "h-full w-full" : ""}>
                 <DinnerRoomScene
                   evento={evento}
                   selectedSillaId={selectedSillaId}
@@ -2041,6 +2047,7 @@ export default function Home() {
                   hide2DHeader
                   touchGestureProfile="presencial"
                   hideControlsLegend={useTouchMobileFlow}
+                  compactUi={useTouchMobileFlow}
                 />
               </section>
             )}

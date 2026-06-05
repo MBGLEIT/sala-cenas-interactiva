@@ -23,6 +23,7 @@ type DinnerRoomPlan2DProps = {
   showCompatibilityMessage?: boolean;
   touchMode?: boolean;
   hideHeader?: boolean;
+  compactUi?: boolean;
 };
 
 type PanOffset = {
@@ -93,6 +94,7 @@ export default function DinnerRoomPlan2D({
   showCompatibilityMessage = false,
   touchMode = false,
   hideHeader = false,
+  compactUi = false,
 }: DinnerRoomPlan2DProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const dragStateRef = useRef<{
@@ -598,7 +600,9 @@ export default function DinnerRoomPlan2D({
           <button
             type="button"
             onClick={() => adjustZoom("in")}
-            className="pointer-events-auto inline-flex h-14 w-14 items-center justify-center rounded-full border border-stone-300 bg-white/95 text-2xl font-semibold text-stone-800 shadow-sm backdrop-blur transition hover:border-stone-950"
+            className={`pointer-events-auto inline-flex items-center justify-center rounded-full border border-stone-300 bg-white/95 font-semibold text-stone-800 shadow-sm backdrop-blur transition hover:border-stone-950 ${
+              compactUi ? "h-11 w-11 text-xl" : "h-14 w-14 text-2xl"
+            }`}
             aria-label="Acercar"
           >
             +
@@ -606,7 +610,9 @@ export default function DinnerRoomPlan2D({
           <button
             type="button"
             onClick={() => adjustZoom("out")}
-            className="pointer-events-auto inline-flex h-14 w-14 items-center justify-center rounded-full border border-stone-300 bg-white/95 text-2xl font-semibold text-stone-800 shadow-sm backdrop-blur transition hover:border-stone-950"
+            className={`pointer-events-auto inline-flex items-center justify-center rounded-full border border-stone-300 bg-white/95 font-semibold text-stone-800 shadow-sm backdrop-blur transition hover:border-stone-950 ${
+              compactUi ? "h-11 w-11 text-xl" : "h-14 w-14 text-2xl"
+            }`}
             aria-label="Alejar"
           >
             −
@@ -614,7 +620,9 @@ export default function DinnerRoomPlan2D({
           <button
             type="button"
             onClick={resetView}
-            className="pointer-events-auto inline-flex min-h-12 items-center justify-center rounded-full border border-stone-300 bg-white/95 px-4 py-3 text-xs font-semibold uppercase tracking-[0.18em] text-stone-700 shadow-sm backdrop-blur transition hover:border-stone-950 hover:text-stone-950"
+            className={`pointer-events-auto inline-flex items-center justify-center rounded-full border border-stone-300 bg-white/95 font-semibold uppercase tracking-[0.18em] text-stone-700 shadow-sm backdrop-blur transition hover:border-stone-950 hover:text-stone-950 ${
+              compactUi ? "min-h-10 px-3.5 py-2 text-[11px]" : "min-h-12 px-4 py-3 text-xs"
+            }`}
           >
             Centrar
           </button>
