@@ -601,7 +601,7 @@ export default function DinnerRoomPlan2D({
                 ? "bottom-36 sm:bottom-40"
                 : "bottom-52 sm:bottom-56"
               : "bottom-4"
-          }`}
+          } ${compactUi ? "items-end" : ""}`}
         >
           <button
             type="button"
