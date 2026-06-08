@@ -584,7 +584,7 @@ export function getProtectedCenteredPlanFrame(
 ): PlanFrame {
   const bounds = getProtectedEventBounds(mesas, eventName);
   const horizontalPadding = 150;
-  const topPadding = 190;
+  const topPadding = 140;
   const bottomPadding = 120;
   const minWidth = 900;
   const minHeight = 700;
