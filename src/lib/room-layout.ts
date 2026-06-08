@@ -589,7 +589,6 @@ export function getProtectedCenteredPlanFrame(
   const minWidth = 900;
   const minHeight = 700;
   const roomCenterX = ROOM_LAYOUT_WIDTH / 2;
-  const roomCenterY = ROOM_LAYOUT_HEIGHT / 2;
   const halfWidth = Math.min(
     ROOM_LAYOUT_WIDTH / 2,
     Math.max(
@@ -598,21 +597,37 @@ export function getProtectedCenteredPlanFrame(
       bounds.maxX - roomCenterX + horizontalPadding,
     ),
   );
-  const halfHeight = Math.min(
-    ROOM_LAYOUT_HEIGHT / 2,
-    Math.max(
-      minHeight / 2,
-      roomCenterY - bounds.minY + topPadding,
-      bounds.maxY - roomCenterY + bottomPadding,
-    ),
-  );
+
+  let minY = Math.max(0, bounds.minY - topPadding);
+  let maxY = Math.min(ROOM_LAYOUT_HEIGHT, bounds.maxY + bottomPadding);
+  let height = maxY - minY;
+
+  if (height < minHeight) {
+    const extraHeight = minHeight - height;
+    const expandUp = extraHeight / 2;
+    const expandDown = extraHeight / 2;
+    minY = Math.max(0, minY - expandUp);
+    maxY = Math.min(ROOM_LAYOUT_HEIGHT, maxY + expandDown);
+    height = maxY - minY;
+
+    if (height < minHeight) {
+      if (minY === 0) {
+        maxY = Math.min(ROOM_LAYOUT_HEIGHT, minHeight);
+      } else if (maxY === ROOM_LAYOUT_HEIGHT) {
+        minY = Math.max(0, ROOM_LAYOUT_HEIGHT - minHeight);
+      }
+      height = maxY - minY;
+    }
+  }
+
+  const centerY = minY + height / 2;
 
   return {
     minX: roomCenterX - halfWidth,
-    minY: roomCenterY - halfHeight,
+    minY,
     width: halfWidth * 2,
-    height: halfHeight * 2,
+    height,
     centerX: roomCenterX,
-    centerY: roomCenterY,
+    centerY,
   };
 }
