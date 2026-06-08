@@ -33,7 +33,20 @@ SUPABASE_SECRET_KEY=
 ADMIN_ACCESS_PASSWORD=
 OPENAI_API_KEY=
 OPENAI_IMPORT_MODEL=gpt-4.1
+PLAN_IMPORT_MODE=worker
 ```
+
+`PLAN_IMPORT_MODE` admite:
+
+- `worker`: Vercel encola el plano y lo procesa el worker externo
+- `openai`: Vercel procesa el plano directamente en la request usando el camino `OpenAI-only`
+
+Para comparar ambos caminos sin desmontar nada:
+
+- deja el worker desplegado
+- cambia solo `PLAN_IMPORT_MODE` en Vercel
+- `worker` para flujo actual
+- `openai` para prueba sin worker
 
 ## 3. Variables de entorno en el worker
 

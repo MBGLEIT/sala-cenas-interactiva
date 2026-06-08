@@ -14,9 +14,11 @@ import {
 } from "@/lib/plan-import-cloud";
 import { importTablesFromPlanFile, type PlanImportHints, type ImportedPlanTable } from "@/lib/plan-import";
 import {
+  getPlanImportMode,
   isRunningOnVercel,
   PLAN_IMPORT_FILE_SIZE_MESSAGE,
   PLAN_IMPORT_SAFE_FILE_SIZE_BYTES,
+  shouldQueuePlanImportOnVercel,
 } from "@/lib/runtime-env";
 import {
   appendPlanImportTraceLog,
@@ -115,6 +117,8 @@ export async function POST(request: Request) {
   beginPlanImportTrace(traceId);
   registerPlanImportAbortController(traceId);
   routeLog(traceId, "info", "request.started");
+  const planImportMode = getPlanImportMode();
+  const queueOnVercel = shouldQueuePlanImportOnVercel();
 
   try {
 
@@ -237,7 +241,7 @@ export async function POST(request: Request) {
       expectedChairTotal: parsedBody.data.expectedChairTotal,
     },
     runtimeMode: isRunningOnVercel() ? "vercel" : "local",
-    status: isRunningOnVercel() ? "pending" : "running",
+    status: queueOnVercel ? "pending" : "running",
   }).catch((error) => {
     routeLog(traceId, "warn", "request.cloud_job_failed", {
       message: error instanceof Error ? error.message : String(error),
@@ -271,9 +275,9 @@ export async function POST(request: Request) {
   });
   await updatePlanImportJob(traceId, {
     event_name: eventoData?.nombre ?? null,
-    summary: isRunningOnVercel()
+    summary: queueOnVercel
       ? "Plano recibido y encolado para procesamiento cloud."
-      : "Plano recibido y listo para procesarse.",
+      : `Plano recibido y listo para procesarse en modo ${planImportMode}.`,
   }).catch(() => null);
 
   let importedTables;
@@ -292,10 +296,11 @@ export async function POST(request: Request) {
     });
   }
 
-  if (isRunningOnVercel()) {
+  if (queueOnVercel) {
     routeLog(traceId, "info", "request.queued_for_worker", {
       traceId,
       filePath: uploadedFilePath,
+      planImportMode,
     });
     markPlanImportTraceStatus(
       traceId,
@@ -313,6 +318,7 @@ export async function POST(request: Request) {
           "Plano recibido correctamente. La importacion se ha puesto en cola y empezara en cuanto el worker lo reclame.",
         traceId,
         queued: true,
+        mode: planImportMode,
       },
       { status: 202 },
     );
@@ -321,8 +327,8 @@ export async function POST(request: Request) {
   try {
     await updatePlanImportJob(traceId, {
       started_at: new Date().toISOString(),
-      summary: "Procesando importacion del plano.",
-      processor_version: "local-importer-v1",
+      summary: `Procesando importacion del plano en modo ${planImportMode}.`,
+      processor_version: queueOnVercel ? "worker-importer-v1" : `direct-${planImportMode}-importer-v1`,
       status: "running",
     }).catch(() => null);
     importedTables = await importTablesFromPlanFile(

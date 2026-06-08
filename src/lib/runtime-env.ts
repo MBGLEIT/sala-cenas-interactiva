@@ -2,6 +2,22 @@ export function isRunningOnVercel() {
   return process.env.VERCEL === "1" || process.env.VERCEL === "true";
 }
 
+export type PlanImportMode = "worker" | "openai";
+
+export function getPlanImportMode(): PlanImportMode {
+  const rawMode = process.env.PLAN_IMPORT_MODE?.trim().toLowerCase();
+
+  if (rawMode === "openai") {
+    return "openai";
+  }
+
+  return "worker";
+}
+
+export function shouldQueuePlanImportOnVercel() {
+  return isRunningOnVercel() && getPlanImportMode() === "worker";
+}
+
 export const PLAN_IMPORT_SAFE_FILE_SIZE_BYTES = 4 * 1024 * 1024;
 
 export const PLAN_IMPORT_FILE_SIZE_MESSAGE =
