@@ -22,21 +22,18 @@ if not exist ".env.local" (
   exit /b 1
 )
 
-where node >nul 2>nul
-if errorlevel 1 (
-  echo ERROR: Node.js no esta instalado o no esta en PATH.
-  pause
-  exit /b 1
-)
+set "LOCAL_TSX=%CD%\node_modules\.bin\tsx.cmd"
+set "CAN_RUN_LOCAL=0"
+if exist "%LOCAL_TSX%" set "CAN_RUN_LOCAL=1"
 
-where npm.cmd >nul 2>nul
-if errorlevel 1 (
-  echo ERROR: npm no esta disponible.
-  pause
-  exit /b 1
-)
-
-if not exist "node_modules" (
+if "%CAN_RUN_LOCAL%"=="0" (
+  where npm.cmd >nul 2>nul
+  if errorlevel 1 (
+    echo ERROR: No hay dependencias locales y npm no esta disponible.
+    echo Usa una carpeta portable completa o instala Node.js LTS.
+    pause
+    exit /b 1
+  )
   echo Instalando dependencias del proyecto...
   call npm.cmd install
   if errorlevel 1 (
@@ -44,14 +41,15 @@ if not exist "node_modules" (
     pause
     exit /b 1
   )
+  set "CAN_RUN_LOCAL=1"
 )
 
 echo Cerrando workers anteriores si los hubiera...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { ($_.Name -eq 'node.exe' -or $_.Name -eq 'cmd.exe') -and $_.CommandLine -like '*plan-import-worker.ts*' } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; Write-Host ('Worker cerrado PID ' + $_.ProcessId) } catch { Write-Host ('No se pudo cerrar PID ' + $_.ProcessId + ': ' + $_.Exception.Message) } }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $workers = Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { ($_.Name -eq 'node.exe' -or $_.Name -eq 'cmd.exe') -and $_.CommandLine -like '*plan-import-worker.ts*' }; foreach ($worker in $workers) { try { Stop-Process -Id $worker.ProcessId -Force -ErrorAction Stop; Write-Host ('Worker cerrado PID ' + $worker.ProcessId) } catch { Write-Host ('Aviso: no se pudo cerrar PID ' + $worker.ProcessId + ': ' + $_.Exception.Message) } }; if (-not $workers) { Write-Host 'No se encontraron workers anteriores.' } } catch { Write-Host ('Aviso: Windows no permitio revisar procesos antiguos: ' + $_.Exception.Message); Write-Host 'Continuo limpiando la cola y arrancando un worker nuevo.' }"
 
 echo.
 echo Limpiando cola de importaciones activas...
-call npx.cmd tsx scripts/plan-import-worker-maintenance.ts --clean-active
+call "%LOCAL_TSX%" scripts/plan-import-worker-maintenance.ts --clean-active
 if errorlevel 1 (
   echo ERROR: No se pudo limpiar la cola.
   pause
@@ -64,7 +62,7 @@ echo Puedes cerrar esta ventana para detenerlo.
 echo Log: plan-import-worker.log
 echo.
 
-call npm.cmd run worker:plan-import
+call "%LOCAL_TSX%" scripts/plan-import-worker.ts
 
 echo.
 echo Worker detenido.

@@ -23,23 +23,18 @@ if not exist ".env.local" (
   exit /b 1
 )
 
-where node >nul 2>nul
-if errorlevel 1 (
-  echo ERROR: Node.js no esta instalado o no esta en PATH.
-  echo Instala Node.js LTS en este equipo y vuelve a ejecutar este archivo.
-  pause
-  exit /b 1
-)
+set "LOCAL_TSX=%CD%\node_modules\.bin\tsx.cmd"
+set "CAN_RUN_LOCAL=0"
+if exist "%LOCAL_TSX%" set "CAN_RUN_LOCAL=1"
 
-where npm.cmd >nul 2>nul
-if errorlevel 1 (
-  echo ERROR: npm no esta disponible.
-  echo Reinstala Node.js LTS marcando la opcion de npm.
-  pause
-  exit /b 1
-)
-
-if not exist "node_modules" (
+if "%CAN_RUN_LOCAL%"=="0" (
+  where npm.cmd >nul 2>nul
+  if errorlevel 1 (
+    echo ERROR: No hay dependencias locales y npm no esta disponible.
+    echo Usa una carpeta portable completa o instala Node.js LTS.
+    pause
+    exit /b 1
+  )
   echo Instalando dependencias del proyecto...
   call npm.cmd install
   if errorlevel 1 (
@@ -47,6 +42,7 @@ if not exist "node_modules" (
     pause
     exit /b 1
   )
+  set "CAN_RUN_LOCAL=1"
 )
 
 echo.
@@ -55,7 +51,7 @@ echo Puedes cerrar esta ventana para detenerlo.
 echo Log: plan-import-worker.log
 echo.
 
-call npm.cmd run worker:plan-import
+call "%LOCAL_TSX%" scripts/plan-import-worker.ts
 
 echo.
 echo Worker detenido.
