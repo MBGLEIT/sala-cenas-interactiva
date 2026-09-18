@@ -262,7 +262,7 @@ export default function AdminLoginForm() {
               htmlFor="admin-password"
               className="block text-sm font-semibold uppercase tracking-[0.2em] text-stone-500"
             >
-              Contrasena
+              Contraseña
             </label>
             <input
               id="admin-password"
@@ -313,7 +313,7 @@ export default function AdminLoginForm() {
               htmlFor="register-password"
               className="block text-sm font-semibold uppercase tracking-[0.2em] text-stone-500"
             >
-              Contrasena
+              Contraseña
             </label>
             <input
               id="register-password"

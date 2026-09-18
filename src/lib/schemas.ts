@@ -43,7 +43,7 @@ export const adminLoginSchema = z.object({
     .transform((value) => value.toLowerCase()),
   password: z
     .string()
-    .min(8, "La contrasena debe tener al menos 8 caracteres"),
+    .min(8, "La contraseña debe tener al menos 8 caracteres"),
 });
 
 export const adminRegisterSchema = adminLoginSchema.extend({

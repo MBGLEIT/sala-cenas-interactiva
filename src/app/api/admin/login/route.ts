@@ -29,7 +29,7 @@ export async function POST(request: Request) {
     !(await verifyAdminPasswordHash(parsedBody.data.password, adminUser.password_hash))
   ) {
     return NextResponse.json(
-      { error: "El correo o la contrasena no son correctos." },
+      { error: "El correo o la contraseña no son correctos." },
       { status: 401 },
     );
   }

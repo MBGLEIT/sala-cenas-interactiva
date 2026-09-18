@@ -52,7 +52,7 @@ function printUsage() {
   console.log(
     [
       "Uso:",
-      "npm run admin:create-initial -- --email=admin@ejemplo.com --name=\"Admin Principal\" --password=\"ContrasenaSegura123\"",
+      "npm run admin:create-initial -- --email=admin@ejemplo.com --name=\"Admin Principal\" --password=\"ContraseñaSegura123\"",
       "",
       "La cuenta se crea aprobada. En el primer acceso configurara 2FA y pasara a activa.",
     ].join("\n"),
@@ -71,7 +71,7 @@ async function main() {
   }
 
   if (args.password.length < 8) {
-    console.error("La contrasena debe tener al menos 8 caracteres.");
+    console.error("La contraseña debe tener al menos 8 caracteres.");
     process.exitCode = 1;
     return;
   }
