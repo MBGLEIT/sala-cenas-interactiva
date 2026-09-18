@@ -36,10 +36,37 @@ export const buscarAsistenteSchema = z
   );
 
 export const adminLoginSchema = z.object({
-  password: z
+  email: z
     .string()
     .trim()
-    .min(4, "La contrasena admin debe tener al menos 4 caracteres"),
+    .email("Introduce un correo valido")
+    .transform((value) => value.toLowerCase()),
+  password: z
+    .string()
+    .min(8, "La contrasena debe tener al menos 8 caracteres"),
+});
+
+export const adminRegisterSchema = adminLoginSchema.extend({
+  name: z
+    .string()
+    .trim()
+    .min(3, "El nombre debe tener al menos 3 caracteres")
+    .max(120, "El nombre no puede superar 120 caracteres"),
+});
+
+export const adminTotpSetupSchema = z.object({
+  setupToken: z.string().trim().min(20, "La sesion de 2FA no es valida"),
+  code: z.string().trim().regex(/^\d{6}$/, "El codigo 2FA debe tener 6 numeros"),
+});
+
+export const adminTotpVerifySchema = z.object({
+  challengeToken: z.string().trim().min(20, "La sesion de 2FA no es valida"),
+  code: z.string().trim().regex(/^\d{6}$/, "El codigo 2FA debe tener 6 numeros"),
+});
+
+export const adminAccessRequestReviewSchema = z.object({
+  adminUserId: uuidLikeSchema,
+  action: z.enum(["approve", "reject"]),
 });
 
 export const adminUpsertReservaSchema = z.object({

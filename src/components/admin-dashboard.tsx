@@ -89,6 +89,16 @@ type PendingPlanImportChoice = {
   hints: PlanImportHintsInput;
 };
 
+type AdminAccessRequest = {
+  id: string;
+  email: string;
+  name: string;
+  status: "pending" | "approved" | "active" | "rejected" | "disabled";
+  createdAt: string;
+  approvedAt: string | null;
+  lastLoginAt: string | null;
+};
+
 type ChairRow = {
   id: string;
   mesaId: string;
@@ -279,6 +289,9 @@ export default function AdminDashboard({
   const [error, setError] = useState("");
   const [isPending, startTransition] = useTransition();
   const refreshTimeoutRef = useRef<number | null>(null);
+  const [adminAccessRequests, setAdminAccessRequests] = useState<AdminAccessRequest[]>([]);
+  const [adminAccessLoading, setAdminAccessLoading] = useState(false);
+  const [adminAccessBusyId, setAdminAccessBusyId] = useState("");
 
   const [eventoNombre, setEventoNombre] = useState("");
   const [eventoFecha, setEventoFecha] = useState("");
@@ -403,6 +416,81 @@ export default function AdminDashboard({
     ]);
   }
 
+  const loadAdminAccessRequests = useCallback(async () => {
+    setAdminAccessLoading(true);
+
+    try {
+      const response = await fetch("/api/admin/access-requests", {
+        cache: "no-store",
+      });
+      const result = (await response.json()) as {
+        requests?: AdminAccessRequest[];
+        error?: string;
+      };
+
+      if (!response.ok) {
+        throw new Error(result.error ?? "No se pudieron cargar las solicitudes admin.");
+      }
+
+      setAdminAccessRequests(result.requests ?? []);
+    } catch (requestError) {
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : "No se pudieron cargar las solicitudes admin.",
+      );
+    } finally {
+      setAdminAccessLoading(false);
+    }
+  }, []);
+
+  async function handleReviewAdminAccessRequest(
+    adminUserId: string,
+    action: "approve" | "reject",
+  ) {
+    setAdminAccessBusyId(adminUserId);
+    setError("");
+
+    try {
+      const response = await fetch("/api/admin/access-requests", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ adminUserId, action }),
+      });
+      const result = (await response.json()) as {
+        message?: string;
+        error?: string;
+      };
+
+      if (!response.ok) {
+        throw new Error(result.error ?? "No se pudo revisar la solicitud admin.");
+      }
+
+      setStatusMessage(result.message ?? "Solicitud admin actualizada.");
+      pushToast({
+        tone: "success",
+        title: action === "approve" ? "Solicitud aprobada" : "Solicitud rechazada",
+        description: result.message ?? "La lista de accesos se ha actualizado.",
+      });
+      await loadAdminAccessRequests();
+    } catch (requestError) {
+      const message =
+        requestError instanceof Error
+          ? requestError.message
+          : "No se pudo revisar la solicitud admin.";
+      setError(message);
+      pushToast({
+        tone: "error",
+        title: "No se pudo revisar",
+        description: message,
+      });
+    } finally {
+      setAdminAccessBusyId("");
+    }
+  }
+
   const activeImportTraceId = importProgress?.traceId;
   const activeImportStatus = importProgress?.status;
 
@@ -436,6 +524,10 @@ export default function AdminDashboard({
       });
     };
   }, [toasts]);
+
+  useEffect(() => {
+    void loadAdminAccessRequests();
+  }, [loadAdminAccessRequests]);
 
   useEffect(() => {
     if (!activeImportTraceId || !activeImportStatus) {
@@ -1637,6 +1729,87 @@ export default function AdminDashboard({
               label="Sillas libres"
               value={panelData?.sillasDisponibles.length ?? 0}
             />
+          </div>
+        </section>
+
+        <section className="rounded-[36px] border border-stone-200 bg-white px-8 py-8 shadow-[0_20px_70px_rgba(28,25,23,0.08)] sm:px-10">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-[0.3em] text-amber-700">
+                Accesos admin
+              </p>
+              <h2 className="mt-3 text-2xl font-semibold tracking-tight text-stone-950">
+                Solicitudes de registro
+              </h2>
+              <p className="mt-3 max-w-3xl text-sm leading-7 text-stone-600">
+                Cualquier administrador activo puede aprobar nuevas cuentas. Al
+                aprobar una solicitud, esa persona podra iniciar sesion y activar
+                su 2FA.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void loadAdminAccessRequests()}
+              disabled={adminAccessLoading}
+              className="inline-flex items-center justify-center rounded-full border border-stone-300 bg-white px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {adminAccessLoading ? "Actualizando..." : "Actualizar"}
+            </button>
+          </div>
+
+          <div className="mt-6 grid gap-3">
+            {adminAccessRequests.length > 0 ? (
+              adminAccessRequests.map((request) => (
+                <div
+                  key={request.id}
+                  className="flex flex-wrap items-center justify-between gap-4 rounded-3xl border border-stone-200 bg-stone-50 px-5 py-4"
+                >
+                  <div>
+                    <p className="text-base font-semibold text-stone-950">
+                      {request.name}
+                    </p>
+                    <p className="mt-1 text-sm text-stone-600">{request.email}</p>
+                    <p className="mt-2 text-xs font-semibold uppercase tracking-[0.18em] text-stone-500">
+                      Estado: {request.status}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void handleReviewAdminAccessRequest(request.id, "approve")
+                      }
+                      disabled={
+                        adminAccessBusyId === request.id ||
+                        request.status === "approved"
+                      }
+                      className="inline-flex items-center justify-center rounded-full bg-emerald-600 px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-stone-400"
+                    >
+                      Aprobar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void handleReviewAdminAccessRequest(request.id, "reject")
+                      }
+                      disabled={
+                        adminAccessBusyId === request.id ||
+                        request.status === "rejected"
+                      }
+                      className="inline-flex items-center justify-center rounded-full border border-rose-300 bg-white px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-rose-700 transition hover:border-rose-500 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Rechazar
+                    </button>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="rounded-3xl border border-dashed border-stone-300 bg-stone-50 px-5 py-5 text-sm leading-7 text-stone-500">
+                {adminAccessLoading
+                  ? "Cargando solicitudes..."
+                  : "No hay solicitudes admin pendientes ahora mismo."}
+              </div>
+            )}
           </div>
         </section>
 

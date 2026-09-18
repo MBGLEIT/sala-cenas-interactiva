@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "admin:create-initial": "tsx scripts/create-initial-admin.ts",
     "worker:plan-import": "tsx scripts/plan-import-worker.ts",
     "worker:plan-import:once": "tsx scripts/plan-import-worker.ts --once",
     "worker:plan-import:check": "tsx scripts/plan-import-worker.ts --dry-run"

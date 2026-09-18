@@ -1,78 +1,172 @@
 import "server-only";
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 import { cookies } from "next/headers";
 
 const ADMIN_SESSION_COOKIE = "admin-session";
-const ADMIN_SESSION_VALUE = "authenticated";
+const SESSION_MAX_AGE_SECONDS = 60 * 60 * 8;
+const CHALLENGE_MAX_AGE_SECONDS = 60 * 10;
 
-function getAdminPassword() {
-  const adminPassword = process.env.ADMIN_ACCESS_PASSWORD;
+type AdminSessionPayload = {
+  sub: string;
+  email: string;
+  exp: number;
+  type: "admin-session";
+};
 
-  if (!adminPassword) {
-    throw new Error("Falta ADMIN_ACCESS_PASSWORD en las variables de entorno.");
+type AdminChallengePayload = {
+  sub: string;
+  email: string;
+  exp: number;
+  nonce: string;
+  purpose: "totp-setup" | "totp-verify";
+};
+
+export type AdminSession = {
+  id: string;
+  email: string;
+};
+
+function getAdminSessionSecret() {
+  const secret = process.env.ADMIN_SESSION_SECRET ?? process.env.ADMIN_ACCESS_PASSWORD;
+
+  if (!secret) {
+    throw new Error(
+      "Falta ADMIN_SESSION_SECRET en las variables de entorno del panel admin.",
+    );
   }
 
-  return adminPassword;
+  return secret;
 }
 
-function signAdminSession(value: string) {
-  return createHmac("sha256", getAdminPassword()).update(value).digest("hex");
+function base64UrlEncode(value: string) {
+  return Buffer.from(value, "utf8").toString("base64url");
 }
 
-function verifyAdminSession(token: string | undefined) {
+function base64UrlDecode(value: string) {
+  return Buffer.from(value, "base64url").toString("utf8");
+}
+
+function signPayload(encodedPayload: string) {
+  return createHmac("sha256", getAdminSessionSecret())
+    .update(encodedPayload)
+    .digest("base64url");
+}
+
+function signToken(payload: AdminSessionPayload | AdminChallengePayload) {
+  const encodedPayload = base64UrlEncode(JSON.stringify(payload));
+
+  return `${encodedPayload}.${signPayload(encodedPayload)}`;
+}
+
+function verifySignedToken<TPayload>(token: string | undefined): TPayload | null {
   if (!token) {
-    return false;
+    return null;
   }
 
-  const [value, signature] = token.split(".");
+  const [encodedPayload, signature] = token.split(".");
 
-  if (!value || !signature) {
-    return false;
+  if (!encodedPayload || !signature) {
+    return null;
   }
 
-  const expectedSignature = signAdminSession(value);
+  const expectedSignature = signPayload(encodedPayload);
   const expectedBuffer = Buffer.from(expectedSignature);
   const providedBuffer = Buffer.from(signature);
 
-  if (expectedBuffer.length !== providedBuffer.length) {
-    return false;
+  if (
+    expectedBuffer.length !== providedBuffer.length ||
+    !timingSafeEqual(expectedBuffer, providedBuffer)
+  ) {
+    return null;
   }
 
-  return value === ADMIN_SESSION_VALUE && timingSafeEqual(expectedBuffer, providedBuffer);
+  try {
+    const payload = JSON.parse(base64UrlDecode(encodedPayload)) as TPayload & {
+      exp?: number;
+    };
+
+    if (!payload.exp || payload.exp < Date.now()) {
+      return null;
+    }
+
+    return payload as TPayload;
+  } catch {
+    return null;
+  }
 }
 
-export function verifyAdminPassword(candidate: string) {
-  const expected = Buffer.from(getAdminPassword());
-  const provided = Buffer.from(candidate);
+export function createAdminChallengeToken({
+  adminId,
+  email,
+  purpose,
+}: {
+  adminId: string;
+  email: string;
+  purpose: AdminChallengePayload["purpose"];
+}) {
+  return signToken({
+    sub: adminId,
+    email,
+    purpose,
+    nonce: randomBytes(12).toString("base64url"),
+    exp: Date.now() + CHALLENGE_MAX_AGE_SECONDS * 1000,
+  });
+}
 
-  if (expected.length !== provided.length) {
-    return false;
+export function verifyAdminChallengeToken(
+  token: string,
+  purpose: AdminChallengePayload["purpose"],
+) {
+  const payload = verifySignedToken<AdminChallengePayload>(token);
+
+  if (!payload || payload.purpose !== purpose) {
+    return null;
   }
 
-  return timingSafeEqual(expected, provided);
+  return {
+    id: payload.sub,
+    email: payload.email,
+  } satisfies AdminSession;
 }
 
-export function createAdminSessionToken() {
-  return `${ADMIN_SESSION_VALUE}.${signAdminSession(ADMIN_SESSION_VALUE)}`;
+export function createAdminSessionToken(admin: AdminSession) {
+  return signToken({
+    sub: admin.id,
+    email: admin.email,
+    type: "admin-session",
+    exp: Date.now() + SESSION_MAX_AGE_SECONDS * 1000,
+  });
+}
+
+export function getAdminSession() {
+  const cookieStore = cookies();
+  const token = cookieStore.get(ADMIN_SESSION_COOKIE)?.value;
+  const payload = verifySignedToken<AdminSessionPayload>(token);
+
+  if (!payload || payload.type !== "admin-session") {
+    return null;
+  }
+
+  return {
+    id: payload.sub,
+    email: payload.email,
+  } satisfies AdminSession;
 }
 
 export function isAdminAuthenticated() {
-  const cookieStore = cookies();
-  const token = cookieStore.get(ADMIN_SESSION_COOKIE)?.value;
-
-  return verifyAdminSession(token);
+  return Boolean(getAdminSession());
 }
 
-export function setAdminSessionCookie() {
+export function setAdminSessionCookie(admin: AdminSession) {
   const cookieStore = cookies();
 
-  cookieStore.set(ADMIN_SESSION_COOKIE, createAdminSessionToken(), {
+  cookieStore.set(ADMIN_SESSION_COOKIE, createAdminSessionToken(admin), {
     httpOnly: true,
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
-    maxAge: 60 * 60 * 8,
+    maxAge: SESSION_MAX_AGE_SECONDS,
     path: "/",
   });
 }
