@@ -601,6 +601,41 @@ export default function AdminDashboard({
   }, [loadAdminAccessRequests]);
 
   useEffect(() => {
+    let refreshTimeoutId: number | null = null;
+
+    function scheduleAdminManagementRefresh() {
+      if (refreshTimeoutId) {
+        window.clearTimeout(refreshTimeoutId);
+      }
+
+      refreshTimeoutId = window.setTimeout(() => {
+        void loadAdminAccessRequests();
+      }, 300);
+    }
+
+    const channel = supabase
+      .channel("admin-management-live")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "admin_management_changes",
+        },
+        scheduleAdminManagementRefresh,
+      )
+      .subscribe();
+
+    return () => {
+      if (refreshTimeoutId) {
+        window.clearTimeout(refreshTimeoutId);
+      }
+
+      void supabase.removeChannel(channel);
+    };
+  }, [loadAdminAccessRequests]);
+
+  useEffect(() => {
     if (!activeImportTraceId || !activeImportStatus) {
       return;
     }
@@ -1825,15 +1860,10 @@ export default function AdminDashboard({
           </summary>
 
           <div className="grid gap-8 border-t border-stone-200 px-8 py-8 sm:px-10">
-            <div className="flex justify-end">
-              <button
-                type="button"
-                onClick={() => void loadAdminAccessRequests()}
-                disabled={adminAccessLoading}
-                className="inline-flex items-center justify-center rounded-full border border-stone-300 bg-white px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {adminAccessLoading ? "Actualizando..." : "Actualizar"}
-              </button>
+            <div className="rounded-3xl border border-emerald-100 bg-emerald-50 px-5 py-4 text-sm leading-7 text-emerald-800">
+              {adminAccessLoading
+                ? "Sincronizando gestion de administradores..."
+                : "Sincronizacion en tiempo real activa."}
             </div>
 
             <div>
