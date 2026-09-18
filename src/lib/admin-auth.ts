@@ -4,6 +4,8 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 import { cookies } from "next/headers";
 
+import { getActiveAdminUser } from "@/lib/admin-users";
+
 const ADMIN_SESSION_COOKIE = "admin-session";
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 8;
 const CHALLENGE_MAX_AGE_SECONDS = 60 * 10;
@@ -155,8 +157,14 @@ export function getAdminSession() {
   } satisfies AdminSession;
 }
 
-export function isAdminAuthenticated() {
-  return Boolean(getAdminSession());
+export async function isAdminAuthenticated() {
+  const session = getAdminSession();
+
+  if (!session) {
+    return false;
+  }
+
+  return Boolean(await getActiveAdminUser(session.id));
 }
 
 export function setAdminSessionCookie(admin: AdminSession) {

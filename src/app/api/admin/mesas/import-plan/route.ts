@@ -125,7 +125,7 @@ export async function POST(request: Request) {
 
   try {
 
-  if (!isAdminAuthenticated()) {
+  if (!(await isAdminAuthenticated())) {
     routeLog(traceId, "warn", "request.unauthorized");
     markPlanImportTraceStatus(traceId, "failed", "No autorizado.");
     return NextResponse.json(

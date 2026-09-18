@@ -10,7 +10,7 @@ import { adminImportPlanTraceSchema } from "@/lib/schemas";
 export const runtime = "nodejs";
 
 export async function GET(request: Request) {
-  if (!isAdminAuthenticated()) {
+  if (!(await isAdminAuthenticated())) {
     return NextResponse.json({ error: "No tienes acceso al panel admin." }, { status: 401 });
   }
 

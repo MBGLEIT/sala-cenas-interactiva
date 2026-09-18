@@ -627,6 +627,13 @@ export default function AdminDashboard({
         error?: string;
       };
 
+      if (response.status === 401) {
+        startTransition(() => {
+          router.refresh();
+        });
+        return;
+      }
+
       if (!response.ok) {
         throw new Error(result.error ?? "No se pudieron cargar las solicitudes admin.");
       }
@@ -643,7 +650,7 @@ export default function AdminDashboard({
     } finally {
       setAdminAccessLoading(false);
     }
-  }, []);
+  }, [router, startTransition]);
 
   async function handleReviewAdminAccessRequest(
     adminUserId: string,
