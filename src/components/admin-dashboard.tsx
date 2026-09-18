@@ -243,7 +243,6 @@ function AdminSection({
 }) {
   return (
     <details
-      open
       className="overflow-hidden rounded-[36px] border border-stone-200 bg-white shadow-[0_20px_70px_rgba(28,25,23,0.12)]"
     >
       <summary className="cursor-pointer list-none px-8 py-6 sm:px-10">
@@ -334,6 +333,16 @@ function formatAdminAction(action: string) {
   return labels[action] ?? action;
 }
 
+function getShortId(value: unknown) {
+  return typeof value === "string" && value.length > 8
+    ? `${value.slice(0, 8)}...`
+    : String(value);
+}
+
+function getDetailValue(details: Record<string, unknown>, key: string) {
+  return details[key];
+}
+
 export default function AdminDashboard({
   events,
   selectedEventId,
@@ -351,6 +360,7 @@ export default function AdminDashboard({
   const [adminAccessLoading, setAdminAccessLoading] = useState(false);
   const [adminAccessBusyId, setAdminAccessBusyId] = useState("");
   const [expandedAdminHistoryUserId, setExpandedAdminHistoryUserId] = useState("");
+  const [adminRealtimeError, setAdminRealtimeError] = useState(false);
 
   const [eventoNombre, setEventoNombre] = useState("");
   const [eventoFecha, setEventoFecha] = useState("");
@@ -435,6 +445,134 @@ export default function AdminDashboard({
       ),
     [panelData],
   );
+
+  const eventNameById = useMemo(
+    () => new Map(events.map((eventItem) => [eventItem.id, eventItem.nombre])),
+    [events],
+  );
+
+  const assistantNameById = useMemo(
+    () =>
+      new Map(
+        (panelData?.asistentes ?? []).map((asistente) => [
+          asistente.id,
+          `${asistente.nombre} (${asistente.identificador})`,
+        ]),
+      ),
+    [panelData?.asistentes],
+  );
+
+  const tableLabelById = useMemo(
+    () =>
+      new Map(
+        (panelData?.evento.mesas ?? []).map((mesa) => [
+          mesa.id,
+          `Mesa ${mesa.numero}`,
+        ]),
+      ),
+    [panelData?.evento.mesas],
+  );
+
+  const chairLabelById = useMemo(
+    () =>
+      new Map(
+        (panelData?.evento.mesas ?? []).flatMap((mesa) =>
+          mesa.sillas.map((silla) => [
+            silla.id,
+            `Mesa ${mesa.numero}, Silla ${silla.numero}`,
+          ]),
+        ),
+      ),
+    [panelData?.evento.mesas],
+  );
+
+  function getAdminLogDetailLines(log: AdminAuditLog) {
+    const details = log.details;
+    const lines: Array<{ label: string; value: string }> = [];
+    const eventoId = getDetailValue(details, "eventoId");
+    const asistenteId = getDetailValue(details, "asistenteId");
+    const sillaId = getDetailValue(details, "sillaId");
+    const mesaId = getDetailValue(details, "mesaId");
+    const reservaId = log.targetType === "reserva" ? log.targetId : null;
+
+    if (typeof eventoId === "string") {
+      lines.push({
+        label: "Evento",
+        value: eventNameById.get(eventoId) ?? `Evento ${getShortId(eventoId)}`,
+      });
+    }
+
+    if (typeof asistenteId === "string") {
+      lines.push({
+        label: "Asistente",
+        value:
+          assistantNameById.get(asistenteId) ??
+          `Asistente ${getShortId(asistenteId)}`,
+      });
+    }
+
+    if (typeof sillaId === "string") {
+      lines.push({
+        label: "Silla",
+        value: chairLabelById.get(sillaId) ?? `Silla ${getShortId(sillaId)}`,
+      });
+    }
+
+    if (typeof mesaId === "string") {
+      lines.push({
+        label: "Mesa",
+        value: tableLabelById.get(mesaId) ?? `Mesa ${getShortId(mesaId)}`,
+      });
+    }
+
+    if (reservaId) {
+      lines.push({
+        label: "Reserva",
+        value: `Reserva ${getShortId(reservaId)}`,
+      });
+    }
+
+    for (const [key, value] of Object.entries(details)) {
+      if (
+        [
+          "eventoId",
+          "asistenteId",
+          "sillaId",
+          "mesaId",
+          "reservaId",
+          "mesaIds",
+        ].includes(key)
+      ) {
+        continue;
+      }
+
+      if (value === null || typeof value === "undefined") {
+        continue;
+      }
+
+      const labelByKey: Record<string, string> = {
+        nombre: "Nombre",
+        fecha: "Fecha",
+        identificador: "Identificador",
+        email: "Correo",
+        name: "Nombre",
+        nextStatus: "Nuevo estado",
+        numero: "Número",
+        quantity: "Cantidad",
+        firstNumber: "Primera mesa",
+        chairCount: "Sillas",
+        posX: "Posición X",
+        posY: "Posición Y",
+      };
+
+      lines.push({
+        label: labelByKey[key] ?? key,
+        value: Array.isArray(value) ? `${value.length} elementos` : String(value),
+      });
+    }
+
+    return lines;
+  }
 
   const asistenteEditActual = useMemo(
     () =>
@@ -624,7 +762,9 @@ export default function AdminDashboard({
         },
         scheduleAdminManagementRefresh,
       )
-      .subscribe();
+      .subscribe((status) => {
+        setAdminRealtimeError(status === "CHANNEL_ERROR" || status === "TIMED_OUT");
+      });
 
     return () => {
       if (refreshTimeoutId) {
@@ -1776,7 +1916,7 @@ export default function AdminDashboard({
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#fff7ed,_#f5f5f4_55%,_#e7e5e4)] px-6 py-12 text-stone-900">
       <ToastStack toasts={toasts} onDismiss={dismissToast} />
 
-      <div className="mx-auto max-w-7xl space-y-6">
+      <div className="mx-auto flex max-w-7xl flex-col gap-6">
         <section className="rounded-[36px] border border-stone-200 bg-white px-8 py-8 shadow-[0_20px_70px_rgba(28,25,23,0.12)] sm:px-10">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
@@ -1838,7 +1978,7 @@ export default function AdminDashboard({
           </div>
         </section>
 
-        <details className="overflow-hidden rounded-[36px] border border-stone-200 bg-white shadow-[0_20px_70px_rgba(28,25,23,0.08)]">
+        <details className="order-last overflow-hidden rounded-[36px] border border-stone-200 bg-white shadow-[0_20px_70px_rgba(28,25,23,0.08)]">
           <summary className="cursor-pointer list-none px-8 py-6 sm:px-10">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
@@ -1860,11 +2000,12 @@ export default function AdminDashboard({
           </summary>
 
           <div className="grid gap-8 border-t border-stone-200 px-8 py-8 sm:px-10">
-            <div className="rounded-3xl border border-emerald-100 bg-emerald-50 px-5 py-4 text-sm leading-7 text-emerald-800">
-              {adminAccessLoading
-                ? "Sincronizando gestion de administradores..."
-                : "Sincronizacion en tiempo real activa."}
-            </div>
+            {adminRealtimeError ? (
+              <div className="rounded-3xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm leading-7 text-amber-800">
+                No se pudo mantener la sincronización en tiempo real de usuarios
+                administradores. Recarga el panel si ves datos desactualizados.
+              </div>
+            ) : null}
 
             <div>
               <h3 className="text-xl font-semibold tracking-tight text-stone-950">
@@ -2006,25 +2147,40 @@ export default function AdminDashboard({
                             </p>
                             <div className="mt-3 grid max-h-80 gap-3 overflow-y-auto pr-1">
                               {userLogs.length > 0 ? (
-                                userLogs.map((log) => (
-                                  <div
-                                    key={log.id}
-                                    className="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3"
-                                  >
-                                    <p className="text-sm font-semibold text-stone-950">
-                                      {formatAdminAction(log.action)}
-                                    </p>
-                                    <p className="mt-1 text-xs text-stone-500">
-                                      {formatAdminDate(log.createdAt)}
-                                      {log.targetType ? ` · ${log.targetType}` : ""}
-                                    </p>
-                                    {Object.keys(log.details).length > 0 ? (
-                                      <p className="mt-2 break-words font-mono text-xs leading-5 text-stone-500">
-                                        {JSON.stringify(log.details)}
+                                userLogs.map((log) => {
+                                  const detailLines = getAdminLogDetailLines(log);
+
+                                  return (
+                                    <div
+                                      key={log.id}
+                                      className="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3"
+                                    >
+                                      <p className="text-sm font-semibold text-stone-950">
+                                        {formatAdminAction(log.action)}
                                       </p>
-                                    ) : null}
-                                  </div>
-                                ))
+                                      <p className="mt-1 text-xs text-stone-500">
+                                        {formatAdminDate(log.createdAt)}
+                                      </p>
+                                      {detailLines.length > 0 ? (
+                                        <dl className="mt-3 grid gap-2 text-sm">
+                                          {detailLines.map((line) => (
+                                            <div
+                                              key={`${log.id}-${line.label}`}
+                                              className="grid gap-1 rounded-2xl bg-white px-3 py-2 sm:grid-cols-[140px_minmax(0,1fr)]"
+                                            >
+                                              <dt className="text-xs font-semibold uppercase tracking-[0.16em] text-stone-500">
+                                                {line.label}
+                                              </dt>
+                                              <dd className="break-words font-medium text-stone-800">
+                                                {line.value}
+                                              </dd>
+                                            </div>
+                                          ))}
+                                        </dl>
+                                      ) : null}
+                                    </div>
+                                  );
+                                })
                               ) : (
                                 <p className="rounded-2xl border border-dashed border-stone-300 bg-stone-50 px-4 py-3 text-sm text-stone-500">
                                   Este usuario todavía no tiene acciones registradas.
