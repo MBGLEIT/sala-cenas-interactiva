@@ -1,10 +1,39 @@
 import { loadEnvConfig } from "@next/env";
+import { createClient } from "@supabase/supabase-js";
+import { randomBytes, scrypt } from "node:crypto";
 
 type CliArgs = {
   email?: string;
   name?: string;
   password?: string;
 };
+
+const KEY_LENGTH = 64;
+const SCRYPT_OPTIONS = {
+  N: 16384,
+  r: 8,
+  p: 1,
+} as const;
+
+function derivePasswordKey(password: string, salt: string) {
+  return new Promise<Buffer>((resolve, reject) => {
+    scrypt(password, salt, KEY_LENGTH, SCRYPT_OPTIONS, (error, derivedKey) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve(derivedKey);
+    });
+  });
+}
+
+async function hashAdminPassword(password: string) {
+  const salt = randomBytes(16).toString("base64url");
+  const key = await derivePasswordKey(password, salt);
+
+  return `scrypt:v1:${salt}:${key.toString("base64url")}`;
+}
 
 function parseArgs(argv: string[]) {
   return argv.reduce<CliArgs>((args, current) => {
@@ -47,10 +76,23 @@ async function main() {
     return;
   }
 
-  const [{ hashAdminPassword }, { supabaseAdmin }] = await Promise.all([
-    import("../src/lib/admin-password"),
-    import("../src/lib/supabase-admin"),
-  ]);
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseSecretKey = process.env.SUPABASE_SECRET_KEY;
+
+  if (!supabaseUrl || !supabaseSecretKey) {
+    console.error(
+      "Faltan NEXT_PUBLIC_SUPABASE_URL o SUPABASE_SECRET_KEY en .env.local.",
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  const supabaseAdmin = createClient(supabaseUrl, supabaseSecretKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
 
   const passwordHash = await hashAdminPassword(args.password);
   const { data, error } = await supabaseAdmin
