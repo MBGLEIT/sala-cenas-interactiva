@@ -18,7 +18,6 @@ import {
   isRunningOnVercel,
   PLAN_IMPORT_FILE_SIZE_MESSAGE,
   PLAN_IMPORT_SAFE_FILE_SIZE_BYTES,
-  shouldQueuePlanImportOnVercel,
 } from "@/lib/runtime-env";
 import {
   appendPlanImportTraceLog,
@@ -117,8 +116,12 @@ export async function POST(request: Request) {
   beginPlanImportTrace(traceId);
   registerPlanImportAbortController(traceId);
   routeLog(traceId, "info", "request.started");
-  const planImportMode = getPlanImportMode();
-  const queueOnVercel = shouldQueuePlanImportOnVercel();
+  const requestedImportMode = initialFormData?.get("importMode");
+  const planImportMode =
+    requestedImportMode === "openai" || requestedImportMode === "worker"
+      ? requestedImportMode
+      : getPlanImportMode();
+  const queueOnVercel = isRunningOnVercel() && planImportMode === "worker";
 
   try {
 
@@ -139,9 +142,11 @@ export async function POST(request: Request) {
   const expectedColumnCount = parseOptionalPositiveInt(formData?.get("expectedColumnCount") ?? null);
   const expectedChairTotal = parseOptionalPositiveInt(formData?.get("expectedChairTotal") ?? null);
   const clientTraceId = typeof formData?.get("clientTraceId") === "string" ? String(formData?.get("clientTraceId")) : undefined;
+  const importMode = typeof formData?.get("importMode") === "string" ? String(formData?.get("importMode")) : undefined;
 
   const parsedBody = adminImportPlanSchema.safeParse({
     eventoId: typeof eventoId === "string" ? eventoId : "",
+    importMode,
     expectedTableCount,
     expectedRowCount,
     expectedColumnCount,
@@ -205,6 +210,7 @@ export async function POST(request: Request) {
     fileName: file.name,
     fileType: file.type,
     fileSize: file.size,
+    planImportMode,
     hints: {
       expectedTableCount: parsedBody.data.expectedTableCount ?? null,
       expectedRowCount: parsedBody.data.expectedRowCount ?? null,
@@ -240,7 +246,7 @@ export async function POST(request: Request) {
       expectedColumnCount: parsedBody.data.expectedColumnCount,
       expectedChairTotal: parsedBody.data.expectedChairTotal,
     },
-    runtimeMode: isRunningOnVercel() ? "vercel" : "local",
+    runtimeMode: queueOnVercel ? "worker" : isRunningOnVercel() ? "vercel" : "local",
     status: queueOnVercel ? "pending" : "running",
   }).catch((error) => {
     routeLog(traceId, "warn", "request.cloud_job_failed", {

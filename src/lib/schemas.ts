@@ -165,6 +165,7 @@ export const adminDeleteAsistenteSchema = z.object({
 
 export const adminImportPlanSchema = z.object({
   eventoId: uuidLikeSchema,
+  importMode: z.enum(["openai", "worker"]).optional(),
   expectedTableCount: z.coerce.number().int().min(1).max(500).optional(),
   expectedRowCount: z.coerce.number().int().min(1).max(100).optional(),
   expectedColumnCount: z.coerce.number().int().min(1).max(100).optional(),

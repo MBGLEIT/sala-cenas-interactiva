@@ -75,6 +75,20 @@ type ReimportDialogMode = "choice" | "params" | null;
 
 type MesaCapacityPreset = "8" | "10" | "12" | "custom";
 
+type PlanImportModeChoice = "openai" | "worker";
+
+type PlanImportHintsInput = {
+  expectedTableCount: string;
+  expectedRowCount: string;
+  expectedColumnCount: string;
+  expectedChairTotal: string;
+};
+
+type PendingPlanImportChoice = {
+  file: File;
+  hints: PlanImportHintsInput;
+};
+
 type ChairRow = {
   id: string;
   mesaId: string;
@@ -299,6 +313,8 @@ export default function AdminDashboard({
   const [planExpectedRowCount, setPlanExpectedRowCount] = useState("");
   const [planExpectedColumnCount, setPlanExpectedColumnCount] = useState("");
   const [planExpectedChairTotal, setPlanExpectedChairTotal] = useState("");
+  const [pendingPlanImportChoice, setPendingPlanImportChoice] =
+    useState<PendingPlanImportChoice | null>(null);
   const [importReview, setImportReview] = useState<ImportReviewState | null>(null);
   const [showImportRejectActions, setShowImportRejectActions] = useState(false);
   const [importProgress, setImportProgress] = useState<ImportProgressState | null>(null);
@@ -946,12 +962,11 @@ export default function AdminDashboard({
     }
   }
 
-  async function runPlanImport(fileToImport: File, hints: {
-    expectedTableCount: string;
-    expectedRowCount: string;
-    expectedColumnCount: string;
-    expectedChairTotal: string;
-  }) {
+  async function runPlanImport(
+    fileToImport: File,
+    hints: PlanImportHintsInput,
+    importMode: PlanImportModeChoice = "openai",
+  ) {
     if (!selectedEventId) {
       return false;
     }
@@ -974,6 +989,7 @@ export default function AdminDashboard({
     const clientTraceId = crypto.randomUUID().slice(0, 8);
     formData.append("clientTraceId", clientTraceId);
     formData.append("eventoId", selectedEventId);
+    formData.append("importMode", importMode);
     formData.append("file", fileToImport);
     if (hints.expectedTableCount.trim()) {
       formData.append("expectedTableCount", hints.expectedTableCount.trim());
@@ -1140,12 +1156,29 @@ export default function AdminDashboard({
       return;
     }
 
-    await runPlanImport(planFile, {
-      expectedTableCount: planExpectedTableCount,
-      expectedRowCount: planExpectedRowCount,
-      expectedColumnCount: planExpectedColumnCount,
-      expectedChairTotal: planExpectedChairTotal,
+    setPendingPlanImportChoice({
+      file: planFile,
+      hints: {
+        expectedTableCount: planExpectedTableCount,
+        expectedRowCount: planExpectedRowCount,
+        expectedColumnCount: planExpectedColumnCount,
+        expectedChairTotal: planExpectedChairTotal,
+      },
     });
+  }
+
+  async function handleChoosePlanImportMode(importMode: PlanImportModeChoice) {
+    if (!pendingPlanImportChoice) {
+      return;
+    }
+
+    const importChoice = pendingPlanImportChoice;
+    setPendingPlanImportChoice(null);
+    await runPlanImport(importChoice.file, importChoice.hints, importMode);
+  }
+
+  function handleClosePlanImportModeChoice() {
+    setPendingPlanImportChoice(null);
   }
 
   async function handleCancelImport() {
@@ -2426,13 +2459,75 @@ export default function AdminDashboard({
                   disabled={!selectedEventId || !planFile || isPending}
                   className="inline-flex items-center justify-center rounded-full bg-stone-950 px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-stone-400"
                 >
-                  Cargar plano
+                  Importar plano
                 </button>
               </form>
             </AdminCard>
           </div>
         </AdminSection>
       </div>
+
+      {pendingPlanImportChoice ? (
+        <div className="fixed inset-0 z-40 overflow-y-auto bg-stone-950/55 p-3 backdrop-blur-sm sm:p-4">
+          <div className="flex min-h-full items-start justify-center py-4 sm:items-center">
+            <div className="w-full max-w-2xl rounded-[32px] border border-stone-200 bg-white px-5 py-6 shadow-[0_30px_120px_rgba(28,25,23,0.28)] sm:px-7 sm:py-7">
+              <p className="text-sm font-semibold uppercase tracking-[0.25em] text-amber-700">
+                Importar plano
+              </p>
+              <h2 className="mt-3 text-2xl font-semibold tracking-tight text-stone-950">
+                Elige como quieres procesar este plano
+              </h2>
+              <p className="mt-3 text-sm leading-7 text-stone-600">
+                OpenAI es el modo recomendado porque funciona directamente en Vercel. Usa el worker solo como respaldo si quieres comparar resultados o procesar con el worker portable.
+              </p>
+
+              <div className="mt-6 grid gap-4 md:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => void handleChoosePlanImportMode("openai")}
+                  className="group rounded-[28px] border border-emerald-200 bg-emerald-50 px-5 py-5 text-left transition hover:border-emerald-500 hover:bg-emerald-100"
+                >
+                  <span className="inline-flex rounded-full bg-emerald-600 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-white">
+                    Recomendado
+                  </span>
+                  <span className="mt-4 block text-xl font-semibold tracking-tight text-stone-950">
+                    Importar con OpenAI
+                  </span>
+                  <span className="mt-2 block text-sm leading-6 text-stone-600">
+                    Procesa el plano directamente en Vercel sin arrancar ningun worker.
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => void handleChoosePlanImportMode("worker")}
+                  className="group rounded-[28px] border border-stone-200 bg-stone-50 px-5 py-5 text-left transition hover:border-amber-500 hover:bg-amber-50"
+                >
+                  <span className="inline-flex rounded-full border border-stone-300 bg-white px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-stone-600">
+                    Plan B
+                  </span>
+                  <span className="mt-4 block text-xl font-semibold tracking-tight text-stone-950">
+                    Importar con Worker
+                  </span>
+                  <span className="mt-2 block text-sm leading-6 text-stone-600">
+                    Encola el plano para que lo procese el worker externo o portable.
+                  </span>
+                </button>
+              </div>
+
+              <div className="mt-6 flex justify-end">
+                <button
+                  type="button"
+                  onClick={handleClosePlanImportModeChoice}
+                  className="inline-flex items-center justify-center rounded-full border border-stone-300 bg-white px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {importProgress ? (
         <div className="fixed inset-0 z-40 overflow-y-auto bg-stone-950/55 p-3 backdrop-blur-sm sm:p-4">
