@@ -312,6 +312,8 @@ function formatAdminAction(action: string) {
     "admin_user.reject": "Rechazó solicitud admin",
     "admin_user.revoke": "Revocó acceso admin",
     "admin_user.restore": "Restituyó acceso admin",
+    "admin_user.reset_2fa": "Reactivó 2FA",
+    "admin_user.delete": "Eliminó usuario admin",
     "event.create": "Creó evento",
     "event.update": "Actualizó evento",
     "event.delete": "Eliminó evento",
@@ -654,7 +656,7 @@ export default function AdminDashboard({
 
   async function handleReviewAdminAccessRequest(
     adminUserId: string,
-    action: "approve" | "reject" | "revoke" | "restore",
+    action: "approve" | "reject" | "revoke" | "restore" | "reset_2fa" | "delete",
   ) {
     setAdminAccessBusyId(adminUserId);
     setError("");
@@ -684,7 +686,11 @@ export default function AdminDashboard({
             ? "Solicitud rechazada"
             : action === "revoke"
               ? "Acceso revocado"
-              : "Acceso restituido";
+              : action === "restore"
+                ? "Acceso restituido"
+                : action === "reset_2fa"
+                  ? "2FA reactivado"
+                  : "Usuario eliminado";
       pushToast({
         tone: "success",
         title: actionTitle,
@@ -2144,6 +2150,32 @@ export default function AdminDashboard({
                                 Revocar acceso
                               </button>
                             )}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void handleReviewAdminAccessRequest(
+                                  adminUser.id,
+                                  "reset_2fa",
+                                )
+                              }
+                              disabled={adminAccessBusyId === adminUser.id}
+                              className="inline-flex items-center justify-center rounded-full border border-amber-300 bg-white px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-amber-700 transition hover:border-amber-500 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              Reactivar 2FA
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void handleReviewAdminAccessRequest(
+                                  adminUser.id,
+                                  "delete",
+                                )
+                              }
+                              disabled={adminAccessBusyId === adminUser.id}
+                              className="inline-flex items-center justify-center rounded-full bg-rose-700 px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-rose-800 disabled:cursor-not-allowed disabled:bg-stone-400"
+                            >
+                              Eliminar definitivamente
+                            </button>
                           </div>
                         </div>
 

@@ -36,6 +36,14 @@ function getActionMessage(action: string) {
     return "Acceso admin revocado.";
   }
 
+  if (action === "reset_2fa") {
+    return "2FA reiniciado. En el proximo acceso tendra que configurarlo de nuevo.";
+  }
+
+  if (action === "delete") {
+    return "Usuario admin eliminado definitivamente.";
+  }
+
   return "Acceso admin restituido.";
 }
 
@@ -114,9 +122,9 @@ export async function POST(request: Request) {
 
   const { adminUserId, action } = parsedBody.data;
 
-  if (adminUserId === activeAdmin.id && action === "revoke") {
+  if (adminUserId === activeAdmin.id && (action === "revoke" || action === "delete")) {
     return NextResponse.json(
-      { error: "No puedes revocar tu propio acceso mientras estás dentro." },
+      { error: "No puedes revocar o borrar tu propio acceso mientras estás dentro." },
       { status: 409 },
     );
   }
@@ -139,6 +147,79 @@ export async function POST(request: Request) {
       { error: "No se encontró el usuario admin." },
       { status: 404 },
     );
+  }
+
+  if (action === "delete") {
+    await logAdminAction({
+      action: "admin_user.delete",
+      targetType: "admin_user",
+      targetId: currentAdminUser.id,
+      details: {
+        email: currentAdminUser.email,
+        name: currentAdminUser.name,
+        previousStatus: currentAdminUser.status,
+      },
+    });
+
+    const { error: deleteError } = await supabaseAdmin
+      .from("admin_users")
+      .delete()
+      .eq("id", adminUserId);
+
+    if (deleteError) {
+      return NextResponse.json(
+        { error: "No se pudo eliminar definitivamente el usuario admin." },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({
+      message: getActionMessage(action),
+    });
+  }
+
+  if (action === "reset_2fa") {
+    const { data, error } = await supabaseAdmin
+      .from("admin_users")
+      .update({
+        status: "approved",
+        totp_enabled: false,
+        totp_secret: null,
+      })
+      .eq("id", adminUserId)
+      .select(ADMIN_USER_COLUMNS)
+      .maybeSingle();
+
+    if (error) {
+      return NextResponse.json(
+        { error: "No se pudo reiniciar el 2FA del usuario admin." },
+        { status: 500 },
+      );
+    }
+
+    if (!data) {
+      return NextResponse.json(
+        { error: "No se encontró el usuario admin." },
+        { status: 404 },
+      );
+    }
+
+    await logAdminAction({
+      action: "admin_user.reset_2fa",
+      targetType: "admin_user",
+      targetId: data.id,
+      details: {
+        email: data.email,
+        name: data.name,
+        nextStatus: "approved",
+      },
+    });
+
+    return NextResponse.json({
+      message: getActionMessage(action),
+      request: serializeAdminAccessRequest(data),
+      user: serializeAdminUser(data),
+    });
   }
 
   const nextStatusByAction = {

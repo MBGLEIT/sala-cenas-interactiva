@@ -66,7 +66,7 @@ export const adminTotpVerifySchema = z.object({
 
 export const adminAccessRequestReviewSchema = z.object({
   adminUserId: uuidLikeSchema,
-  action: z.enum(["approve", "reject", "revoke", "restore"]),
+  action: z.enum(["approve", "reject", "revoke", "restore", "reset_2fa", "delete"]),
 });
 
 export const adminUpsertReservaSchema = z.object({
