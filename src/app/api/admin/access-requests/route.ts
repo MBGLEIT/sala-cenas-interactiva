@@ -121,11 +121,31 @@ export async function POST(request: Request) {
     );
   }
 
+  const { data: currentAdminUser, error: currentAdminUserError } = await supabaseAdmin
+    .from("admin_users")
+    .select(ADMIN_USER_COLUMNS)
+    .eq("id", adminUserId)
+    .maybeSingle();
+
+  if (currentAdminUserError) {
+    return NextResponse.json(
+      { error: "No se pudo comprobar el usuario admin." },
+      { status: 500 },
+    );
+  }
+
+  if (!currentAdminUser) {
+    return NextResponse.json(
+      { error: "No se encontró el usuario admin." },
+      { status: 404 },
+    );
+  }
+
   const nextStatusByAction = {
     approve: "approved",
     reject: "rejected",
     revoke: "disabled",
-    restore: "approved",
+    restore: currentAdminUser.totp_enabled ? "active" : "approved",
   } as const;
   const nextStatus = nextStatusByAction[action];
   const now = new Date().toISOString();
