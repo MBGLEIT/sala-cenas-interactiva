@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { logAdminAction } from "@/lib/admin-audit";
 import { isAdminAuthenticated } from "@/lib/admin-auth";
 import { adminDeleteSillaSchema } from "@/lib/schemas";
 import { supabaseAdmin } from "@/lib/supabase-admin";
@@ -36,6 +37,12 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   }
+
+  await logAdminAction({
+    action: "chair.delete",
+    targetType: "silla",
+    targetId: parsedBody.data.sillaId,
+  });
 
   return NextResponse.json({
     message: "Silla eliminada correctamente.",

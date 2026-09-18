@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { logAdminAction } from "@/lib/admin-audit";
 import { isAdminAuthenticated } from "@/lib/admin-auth";
 import { adminUpdateEventoSchema } from "@/lib/schemas";
 import { supabaseAdmin } from "@/lib/supabase-admin";
@@ -41,6 +42,16 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   }
+
+  await logAdminAction({
+    action: "event.update",
+    targetType: "evento",
+    targetId: eventoId,
+    details: {
+      nombre,
+      fecha,
+    },
+  });
 
   return NextResponse.json({
     message: "Evento actualizado correctamente.",

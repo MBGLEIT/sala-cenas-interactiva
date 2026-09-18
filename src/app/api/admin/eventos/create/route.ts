@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { logAdminAction } from "@/lib/admin-audit";
 import { isAdminAuthenticated } from "@/lib/admin-auth";
 import { adminCreateEventoSchema } from "@/lib/schemas";
 import { supabaseAdmin } from "@/lib/supabase-admin";
@@ -40,6 +41,16 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   }
+
+  await logAdminAction({
+    action: "event.create",
+    targetType: "evento",
+    targetId: data.id,
+    details: {
+      nombre: parsedBody.data.nombre,
+      fecha: parsedBody.data.fecha,
+    },
+  });
 
   return NextResponse.json({
     message: "Evento creado correctamente.",

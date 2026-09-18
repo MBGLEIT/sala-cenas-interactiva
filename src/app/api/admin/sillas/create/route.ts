@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { logAdminAction } from "@/lib/admin-audit";
 import { isAdminAuthenticated } from "@/lib/admin-auth";
 import { adminCreateSillaSchema } from "@/lib/schemas";
 import { supabaseAdmin } from "@/lib/supabase-admin";
@@ -27,10 +28,14 @@ export async function POST(request: Request) {
 
   const { mesaId, numero } = parsedBody.data;
 
-  const { error } = await supabaseAdmin.from("sillas").insert({
-    mesa_id: mesaId,
-    numero,
-  });
+  const { data, error } = await supabaseAdmin
+    .from("sillas")
+    .insert({
+      mesa_id: mesaId,
+      numero,
+    })
+    .select("id")
+    .single();
 
   if (error) {
     if (error.code === "23505") {
@@ -45,6 +50,16 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   }
+
+  await logAdminAction({
+    action: "chair.create",
+    targetType: "silla",
+    targetId: data.id,
+    details: {
+      mesaId,
+      numero,
+    },
+  });
 
   return NextResponse.json({
     message: "Silla creada correctamente.",

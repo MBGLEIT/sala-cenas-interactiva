@@ -70,3 +70,17 @@ export function serializeAdminAccessRequest(user: AdminUserRecord) {
     lastLoginAt: user.last_login_at,
   };
 }
+
+export function serializeAdminUser(user: AdminUserRecord) {
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    status: user.status,
+    totpEnabled: user.totp_enabled,
+    createdAt: user.created_at,
+    approvedAt: user.approved_at,
+    approvedBy: user.approved_by,
+    lastLoginAt: user.last_login_at,
+  };
+}

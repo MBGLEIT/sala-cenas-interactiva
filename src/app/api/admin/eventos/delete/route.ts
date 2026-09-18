@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { logAdminAction } from "@/lib/admin-audit";
 import { isAdminAuthenticated } from "@/lib/admin-auth";
 import { adminDeleteEventoSchema } from "@/lib/schemas";
 import { supabaseAdmin } from "@/lib/supabase-admin";
@@ -36,6 +37,12 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   }
+
+  await logAdminAction({
+    action: "event.delete",
+    targetType: "evento",
+    targetId: parsedBody.data.eventoId,
+  });
 
   return NextResponse.json({
     message: "Evento eliminado correctamente.",

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { logAdminAction } from "@/lib/admin-audit";
 import { isAdminAuthenticated } from "@/lib/admin-auth";
 import { adminDeleteReservaSchema } from "@/lib/schemas";
 import { supabaseAdmin } from "@/lib/supabase-admin";
@@ -36,6 +37,12 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   }
+
+  await logAdminAction({
+    action: "reservation.delete",
+    targetType: "reserva",
+    targetId: parsedBody.data.reservaId,
+  });
 
   return NextResponse.json({
     message: "Reserva eliminada correctamente.",

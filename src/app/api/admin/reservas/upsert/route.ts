@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { logAdminAction } from "@/lib/admin-audit";
 import { isAdminAuthenticated } from "@/lib/admin-auth";
 import { adminUpsertReservaSchema } from "@/lib/schemas";
 import { supabaseAdmin } from "@/lib/supabase-admin";
@@ -132,15 +133,30 @@ export async function POST(request: Request) {
       );
     }
 
+    await logAdminAction({
+      action: "reservation.move",
+      targetType: "reserva",
+      targetId: reservaAsistenteResult.data.id,
+      details: {
+        eventoId,
+        sillaId,
+        asistenteId,
+      },
+    });
+
     return NextResponse.json({
       message: "Reserva recolocada correctamente.",
     });
   }
 
-  const { error: insertError } = await supabaseAdmin.from("reservas").insert({
-    silla_id: sillaId,
-    asistente_id: asistenteId,
-  });
+  const { data: reservaData, error: insertError } = await supabaseAdmin
+    .from("reservas")
+    .insert({
+      silla_id: sillaId,
+      asistente_id: asistenteId,
+    })
+    .select("id")
+    .single();
 
   if (insertError) {
     return NextResponse.json(
@@ -148,6 +164,17 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   }
+
+  await logAdminAction({
+    action: "reservation.create",
+    targetType: "reserva",
+    targetId: reservaData.id,
+    details: {
+      eventoId,
+      sillaId,
+      asistenteId,
+    },
+  });
 
   return NextResponse.json({
     message: "Reserva creada correctamente desde el panel admin.",

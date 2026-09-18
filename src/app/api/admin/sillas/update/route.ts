@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { logAdminAction } from "@/lib/admin-audit";
 import { isAdminAuthenticated } from "@/lib/admin-auth";
 import { adminUpdateSillaSchema } from "@/lib/schemas";
 import { supabaseAdmin } from "@/lib/supabase-admin";
@@ -48,6 +49,16 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   }
+
+  await logAdminAction({
+    action: "chair.update",
+    targetType: "silla",
+    targetId: sillaId,
+    details: {
+      mesaId,
+      numero,
+    },
+  });
 
   return NextResponse.json({
     message: "Silla actualizada correctamente.",

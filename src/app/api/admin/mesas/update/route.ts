@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { logAdminAction } from "@/lib/admin-audit";
 import { isAdminAuthenticated } from "@/lib/admin-auth";
 import { doesTableOverlapProtectedTitle } from "@/lib/room-layout";
 import { adminUpdateMesaSchema } from "@/lib/schemas";
@@ -93,6 +94,17 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   }
+
+  await logAdminAction({
+    action: "table.update",
+    targetType: "mesa",
+    targetId: mesaId,
+    details: {
+      numero,
+      posX,
+      posY,
+    },
+  });
 
   return NextResponse.json({
     message: "Mesa actualizada correctamente.",

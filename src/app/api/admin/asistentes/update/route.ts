@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { logAdminAction } from "@/lib/admin-audit";
 import { isAdminAuthenticated } from "@/lib/admin-auth";
 import { adminUpdateAsistenteSchema } from "@/lib/schemas";
 import { supabaseAdmin } from "@/lib/supabase-admin";
@@ -49,6 +50,16 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   }
+
+  await logAdminAction({
+    action: "assistant.update",
+    targetType: "asistente",
+    targetId: asistenteId,
+    details: {
+      nombre,
+      identificador: identificador.toUpperCase(),
+    },
+  });
 
   return NextResponse.json({
     message: "Asistente actualizado correctamente.",

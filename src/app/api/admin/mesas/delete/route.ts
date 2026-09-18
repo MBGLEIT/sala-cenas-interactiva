@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { logAdminAction } from "@/lib/admin-audit";
 import { isAdminAuthenticated } from "@/lib/admin-auth";
 import { adminDeleteMesaSchema } from "@/lib/schemas";
 import { supabaseAdmin } from "@/lib/supabase-admin";
@@ -42,6 +43,13 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   }
+
+  await logAdminAction({
+    action: "deleteAll" in parsedBody.data ? "table.delete_all" : "table.delete",
+    targetType: "deleteAll" in parsedBody.data ? "evento" : "mesa",
+    targetId:
+      "deleteAll" in parsedBody.data ? parsedBody.data.eventoId : parsedBody.data.mesaId,
+  });
 
   return NextResponse.json({
     message:

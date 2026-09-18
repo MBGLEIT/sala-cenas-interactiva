@@ -99,6 +99,21 @@ type AdminAccessRequest = {
   lastLoginAt: string | null;
 };
 
+type AdminUser = AdminAccessRequest & {
+  totpEnabled: boolean;
+  approvedBy: string | null;
+};
+
+type AdminAuditLog = {
+  id: string;
+  adminUserId: string | null;
+  action: string;
+  targetType: string | null;
+  targetId: string | null;
+  details: Record<string, unknown>;
+  createdAt: string;
+};
+
 type ChairRow = {
   id: string;
   mesaId: string;
@@ -278,6 +293,47 @@ function formatImportLogEntry(entry: ImportTraceLogEntry) {
   return `[${time}] ${entry.stage}${details}`;
 }
 
+function formatAdminDate(value: string | null) {
+  if (!value) {
+    return "Sin fecha";
+  }
+
+  return new Date(value).toLocaleString("es-ES", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatAdminAction(action: string) {
+  const labels: Record<string, string> = {
+    "admin_user.approve": "Aprobó solicitud admin",
+    "admin_user.reject": "Rechazó solicitud admin",
+    "admin_user.revoke": "Revocó acceso admin",
+    "admin_user.restore": "Restituyó acceso admin",
+    "event.create": "Creó evento",
+    "event.update": "Actualizó evento",
+    "event.delete": "Eliminó evento",
+    "assistant.create": "Creó asistente",
+    "assistant.update": "Actualizó asistente",
+    "assistant.delete": "Eliminó asistente",
+    "table.create": "Creó mesa",
+    "table.update": "Actualizó mesa",
+    "table.delete": "Eliminó mesa",
+    "table.delete_all": "Eliminó todas las mesas",
+    "chair.create": "Creó silla",
+    "chair.update": "Actualizó silla",
+    "chair.delete": "Eliminó silla",
+    "reservation.create": "Creó reserva",
+    "reservation.move": "Movió reserva",
+    "reservation.delete": "Eliminó reserva",
+  };
+
+  return labels[action] ?? action;
+}
+
 export default function AdminDashboard({
   events,
   selectedEventId,
@@ -290,8 +346,11 @@ export default function AdminDashboard({
   const [isPending, startTransition] = useTransition();
   const refreshTimeoutRef = useRef<number | null>(null);
   const [adminAccessRequests, setAdminAccessRequests] = useState<AdminAccessRequest[]>([]);
+  const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
+  const [adminAuditLogs, setAdminAuditLogs] = useState<AdminAuditLog[]>([]);
   const [adminAccessLoading, setAdminAccessLoading] = useState(false);
   const [adminAccessBusyId, setAdminAccessBusyId] = useState("");
+  const [expandedAdminHistoryUserId, setExpandedAdminHistoryUserId] = useState("");
 
   const [eventoNombre, setEventoNombre] = useState("");
   const [eventoFecha, setEventoFecha] = useState("");
@@ -425,6 +484,8 @@ export default function AdminDashboard({
       });
       const result = (await response.json()) as {
         requests?: AdminAccessRequest[];
+        users?: AdminUser[];
+        logs?: AdminAuditLog[];
         error?: string;
       };
 
@@ -433,6 +494,8 @@ export default function AdminDashboard({
       }
 
       setAdminAccessRequests(result.requests ?? []);
+      setAdminUsers(result.users ?? []);
+      setAdminAuditLogs(result.logs ?? []);
     } catch (requestError) {
       setError(
         requestError instanceof Error
@@ -446,7 +509,7 @@ export default function AdminDashboard({
 
   async function handleReviewAdminAccessRequest(
     adminUserId: string,
-    action: "approve" | "reject",
+    action: "approve" | "reject" | "revoke" | "restore",
   ) {
     setAdminAccessBusyId(adminUserId);
     setError("");
@@ -469,9 +532,17 @@ export default function AdminDashboard({
       }
 
       setStatusMessage(result.message ?? "Solicitud admin actualizada.");
+      const actionTitle =
+        action === "approve"
+          ? "Solicitud aprobada"
+          : action === "reject"
+            ? "Solicitud rechazada"
+            : action === "revoke"
+              ? "Acceso revocado"
+              : "Acceso restituido";
       pushToast({
         tone: "success",
-        title: action === "approve" ? "Solicitud aprobada" : "Solicitud rechazada",
+        title: actionTitle,
         description: result.message ?? "La lista de accesos se ha actualizado.",
       });
       await loadAdminAccessRequests();
@@ -1732,86 +1803,220 @@ export default function AdminDashboard({
           </div>
         </section>
 
-        <section className="rounded-[36px] border border-stone-200 bg-white px-8 py-8 shadow-[0_20px_70px_rgba(28,25,23,0.08)] sm:px-10">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.3em] text-amber-700">
-                Accesos admin
-              </p>
-              <h2 className="mt-3 text-2xl font-semibold tracking-tight text-stone-950">
-                Solicitudes de registro
-              </h2>
-              <p className="mt-3 max-w-3xl text-sm leading-7 text-stone-600">
-                Cualquier administrador activo puede aprobar nuevas cuentas. Al
-                aprobar una solicitud, esa persona podra iniciar sesion y activar
-                su 2FA.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => void loadAdminAccessRequests()}
-              disabled={adminAccessLoading}
-              className="inline-flex items-center justify-center rounded-full border border-stone-300 bg-white px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {adminAccessLoading ? "Actualizando..." : "Actualizar"}
-            </button>
-          </div>
-
-          <div className="mt-6 grid gap-3">
-            {adminAccessRequests.length > 0 ? (
-              adminAccessRequests.map((request) => (
-                <div
-                  key={request.id}
-                  className="flex flex-wrap items-center justify-between gap-4 rounded-3xl border border-stone-200 bg-stone-50 px-5 py-4"
-                >
-                  <div>
-                    <p className="text-base font-semibold text-stone-950">
-                      {request.name}
-                    </p>
-                    <p className="mt-1 text-sm text-stone-600">{request.email}</p>
-                    <p className="mt-2 text-xs font-semibold uppercase tracking-[0.18em] text-stone-500">
-                      Estado: {request.status}
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void handleReviewAdminAccessRequest(request.id, "approve")
-                      }
-                      disabled={
-                        adminAccessBusyId === request.id ||
-                        request.status === "approved"
-                      }
-                      className="inline-flex items-center justify-center rounded-full bg-emerald-600 px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-stone-400"
-                    >
-                      Aprobar
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void handleReviewAdminAccessRequest(request.id, "reject")
-                      }
-                      disabled={
-                        adminAccessBusyId === request.id ||
-                        request.status === "rejected"
-                      }
-                      className="inline-flex items-center justify-center rounded-full border border-rose-300 bg-white px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-rose-700 transition hover:border-rose-500 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      Rechazar
-                    </button>
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div className="rounded-3xl border border-dashed border-stone-300 bg-stone-50 px-5 py-5 text-sm leading-7 text-stone-500">
-                {adminAccessLoading
-                  ? "Cargando solicitudes..."
-                  : "No hay solicitudes admin pendientes ahora mismo."}
+        <details className="overflow-hidden rounded-[36px] border border-stone-200 bg-white shadow-[0_20px_70px_rgba(28,25,23,0.08)]">
+          <summary className="cursor-pointer list-none px-8 py-6 sm:px-10">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-[0.3em] text-amber-700">
+                  Accesos admin
+                </p>
+                <h2 className="mt-3 text-2xl font-semibold tracking-tight text-stone-950">
+                  Gestión de usuarios administradores
+                </h2>
+                <p className="mt-3 max-w-3xl text-sm leading-7 text-stone-600">
+                  Solicitudes, usuarios activos, accesos revocados e historial de
+                  acciones del panel.
+                </p>
               </div>
-            )}
+              <span className="rounded-full border border-stone-300 bg-white px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-stone-600">
+                Abrir o cerrar
+              </span>
+            </div>
+          </summary>
+
+          <div className="grid gap-8 border-t border-stone-200 px-8 py-8 sm:px-10">
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => void loadAdminAccessRequests()}
+                disabled={adminAccessLoading}
+                className="inline-flex items-center justify-center rounded-full border border-stone-300 bg-white px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {adminAccessLoading ? "Actualizando..." : "Actualizar"}
+              </button>
+            </div>
+
+            <div>
+              <h3 className="text-xl font-semibold tracking-tight text-stone-950">
+                Solicitudes pendientes
+              </h3>
+              <div className="mt-4 grid gap-3">
+                {adminAccessRequests.filter((request) => request.status === "pending").length > 0 ? (
+                  adminAccessRequests
+                    .filter((request) => request.status === "pending")
+                    .map((request) => (
+                      <div
+                        key={request.id}
+                        className="flex flex-wrap items-center justify-between gap-4 rounded-3xl border border-stone-200 bg-stone-50 px-5 py-4"
+                      >
+                        <div>
+                          <p className="text-base font-semibold text-stone-950">
+                            {request.name}
+                          </p>
+                          <p className="mt-1 text-sm text-stone-600">{request.email}</p>
+                          <p className="mt-2 text-xs font-semibold uppercase tracking-[0.18em] text-stone-500">
+                            Solicitado: {formatAdminDate(request.createdAt)}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void handleReviewAdminAccessRequest(request.id, "approve")
+                            }
+                            disabled={adminAccessBusyId === request.id}
+                            className="inline-flex items-center justify-center rounded-full bg-emerald-600 px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-stone-400"
+                          >
+                            Aprobar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void handleReviewAdminAccessRequest(request.id, "reject")
+                            }
+                            disabled={adminAccessBusyId === request.id}
+                            className="inline-flex items-center justify-center rounded-full border border-rose-300 bg-white px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-rose-700 transition hover:border-rose-500 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            Rechazar
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                ) : (
+                  <div className="rounded-3xl border border-dashed border-stone-300 bg-stone-50 px-5 py-5 text-sm leading-7 text-stone-500">
+                    {adminAccessLoading
+                      ? "Cargando solicitudes..."
+                      : "No hay solicitudes admin pendientes ahora mismo."}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <h3 className="text-xl font-semibold tracking-tight text-stone-950">
+                Usuarios administradores
+              </h3>
+              <div className="mt-4 grid gap-3">
+                {adminUsers.length > 0 ? (
+                  adminUsers.map((adminUser) => {
+                    const userLogs = adminAuditLogs.filter(
+                      (log) => log.adminUserId === adminUser.id,
+                    );
+                    const historyOpen = expandedAdminHistoryUserId === adminUser.id;
+
+                    return (
+                      <div
+                        key={adminUser.id}
+                        className="rounded-3xl border border-stone-200 bg-stone-50 px-5 py-4"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-4">
+                          <div>
+                            <p className="text-base font-semibold text-stone-950">
+                              {adminUser.name}
+                            </p>
+                            <p className="mt-1 text-sm text-stone-600">
+                              {adminUser.email}
+                            </p>
+                            <p className="mt-2 text-xs font-semibold uppercase tracking-[0.18em] text-stone-500">
+                              Estado: {adminUser.status} · 2FA:{" "}
+                              {adminUser.totpEnabled ? "activo" : "pendiente"}
+                            </p>
+                            <p className="mt-1 text-xs text-stone-500">
+                              Último acceso: {formatAdminDate(adminUser.lastLoginAt)}
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpandedAdminHistoryUserId((current) =>
+                                  current === adminUser.id ? "" : adminUser.id,
+                                )
+                              }
+                              className="inline-flex items-center justify-center rounded-full border border-stone-300 bg-white px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:border-stone-950 hover:text-stone-950"
+                            >
+                              {historyOpen ? "Ocultar historial" : "Ver historial"}
+                            </button>
+                            {adminUser.status === "disabled" ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void handleReviewAdminAccessRequest(
+                                    adminUser.id,
+                                    "restore",
+                                  )
+                                }
+                                disabled={adminAccessBusyId === adminUser.id}
+                                className="inline-flex items-center justify-center rounded-full bg-emerald-600 px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-stone-400"
+                              >
+                                Restituir acceso
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void handleReviewAdminAccessRequest(
+                                    adminUser.id,
+                                    "revoke",
+                                  )
+                                }
+                                disabled={adminAccessBusyId === adminUser.id}
+                                className="inline-flex items-center justify-center rounded-full border border-rose-300 bg-white px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-rose-700 transition hover:border-rose-500 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                Revocar acceso
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {historyOpen ? (
+                          <div className="mt-5 rounded-3xl border border-stone-200 bg-white px-4 py-4">
+                            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-stone-600">
+                              Historial reciente
+                            </p>
+                            <div className="mt-3 grid max-h-80 gap-3 overflow-y-auto pr-1">
+                              {userLogs.length > 0 ? (
+                                userLogs.map((log) => (
+                                  <div
+                                    key={log.id}
+                                    className="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3"
+                                  >
+                                    <p className="text-sm font-semibold text-stone-950">
+                                      {formatAdminAction(log.action)}
+                                    </p>
+                                    <p className="mt-1 text-xs text-stone-500">
+                                      {formatAdminDate(log.createdAt)}
+                                      {log.targetType ? ` · ${log.targetType}` : ""}
+                                    </p>
+                                    {Object.keys(log.details).length > 0 ? (
+                                      <p className="mt-2 break-words font-mono text-xs leading-5 text-stone-500">
+                                        {JSON.stringify(log.details)}
+                                      </p>
+                                    ) : null}
+                                  </div>
+                                ))
+                              ) : (
+                                <p className="rounded-2xl border border-dashed border-stone-300 bg-stone-50 px-4 py-3 text-sm text-stone-500">
+                                  Este usuario todavía no tiene acciones registradas.
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="rounded-3xl border border-dashed border-stone-300 bg-stone-50 px-5 py-5 text-sm leading-7 text-stone-500">
+                    {adminAccessLoading
+                      ? "Cargando usuarios..."
+                      : "No hay usuarios admin registrados."}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
-        </section>
+        </details>
 
         <section className="grid gap-6 xl:grid-cols-[0.9fr_1.05fr_1.05fr]">
           <AdminCard

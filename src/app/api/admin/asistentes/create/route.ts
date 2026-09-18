@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { logAdminAction } from "@/lib/admin-audit";
 import { isAdminAuthenticated } from "@/lib/admin-auth";
 import { adminCreateAsistenteSchema } from "@/lib/schemas";
 import { supabaseAdmin } from "@/lib/supabase-admin";
@@ -27,12 +28,16 @@ export async function POST(request: Request) {
 
   const { eventoId, nombre, identificador, qrReservaToken } = parsedBody.data;
 
-  const { error } = await supabaseAdmin.from("asistentes").insert({
-    evento_id: eventoId,
-    nombre,
-    identificador: identificador.toUpperCase(),
-    qr_reserva_token: qrReservaToken?.trim() ? qrReservaToken.trim().toUpperCase() : null,
-  });
+  const { data, error } = await supabaseAdmin
+    .from("asistentes")
+    .insert({
+      evento_id: eventoId,
+      nombre,
+      identificador: identificador.toUpperCase(),
+      qr_reserva_token: qrReservaToken?.trim() ? qrReservaToken.trim().toUpperCase() : null,
+    })
+    .select("id")
+    .single();
 
   if (error) {
     if (error.code === "23505") {
@@ -47,6 +52,17 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   }
+
+  await logAdminAction({
+    action: "assistant.create",
+    targetType: "asistente",
+    targetId: data.id,
+    details: {
+      eventoId,
+      nombre,
+      identificador: identificador.toUpperCase(),
+    },
+  });
 
   return NextResponse.json({
     message: "Asistente creado correctamente.",

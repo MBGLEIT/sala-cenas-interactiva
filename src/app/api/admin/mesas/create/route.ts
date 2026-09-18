@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { logAdminAction } from "@/lib/admin-audit";
 import { isAdminAuthenticated } from "@/lib/admin-auth";
 import { doesTableOverlapProtectedTitle, getNextMesaPosition } from "@/lib/room-layout";
 import { adminCreateMesaSchema } from "@/lib/schemas";
@@ -123,6 +124,19 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   }
+
+  await logAdminAction({
+    action: "table.create",
+    targetType: "mesa",
+    targetId: mesasCreadas[0]?.id,
+    details: {
+      eventoId,
+      quantity,
+      firstNumber: numero,
+      chairCount,
+      mesaIds: mesasCreadas.map((mesa) => mesa.id),
+    },
+  });
 
   return NextResponse.json({
     message:
