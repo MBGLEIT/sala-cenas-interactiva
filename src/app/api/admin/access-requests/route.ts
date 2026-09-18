@@ -89,7 +89,9 @@ export async function GET() {
     requests: users
       .filter((user) => ["pending", "approved", "rejected"].includes(user.status))
       .map(serializeAdminAccessRequest),
-    users: users.map(serializeAdminUser),
+    users: users
+      .filter((user) => ["approved", "active", "disabled"].includes(user.status))
+      .map(serializeAdminUser),
     logs: (logsResult.data ?? []).map((log) => ({
       ...serializeAdminAuditLog(log),
       adminUserId: log.admin_user_id,
