@@ -87,7 +87,7 @@ export async function GET() {
 
   return NextResponse.json({
     requests: users
-      .filter((user) => ["pending", "approved", "rejected"].includes(user.status))
+      .filter((user) => user.status === "pending")
       .map(serializeAdminAccessRequest),
     users: users
       .filter((user) => ["approved", "active", "disabled"].includes(user.status))
@@ -180,6 +180,42 @@ export async function POST(request: Request) {
     });
   }
 
+  if (action === "reject") {
+    if (currentAdminUser.status !== "pending") {
+      return NextResponse.json(
+        { error: "Solo se pueden rechazar solicitudes pendientes." },
+        { status: 409 },
+      );
+    }
+
+    await logAdminAction({
+      action: "admin_user.reject",
+      targetType: "admin_user",
+      targetId: currentAdminUser.id,
+      details: {
+        email: currentAdminUser.email,
+        name: currentAdminUser.name,
+        previousStatus: currentAdminUser.status,
+      },
+    });
+
+    const { error: rejectDeleteError } = await supabaseAdmin
+      .from("admin_users")
+      .delete()
+      .eq("id", adminUserId);
+
+    if (rejectDeleteError) {
+      return NextResponse.json(
+        { error: "No se pudo eliminar la solicitud admin rechazada." },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({
+      message: getActionMessage(action),
+    });
+  }
+
   if (action === "reset_2fa") {
     const { data, error } = await supabaseAdmin
       .from("admin_users")
@@ -226,7 +262,6 @@ export async function POST(request: Request) {
 
   const nextStatusByAction = {
     approve: "approved",
-    reject: "rejected",
     revoke: "disabled",
     restore: currentAdminUser.totp_enabled ? "active" : "approved",
   } as const;
